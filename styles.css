@@ -1,0 +1,802 @@
+/* Skyrim-inspired UI Theme */
+:root {
+  --text-primary: #ffffff;
+  --text-secondary: #aaaaaa;
+  --text-dim: #666666;
+  --border-color: rgba(100, 100, 100, 0.4);
+  --duck-active: #ff4444; /* Added */
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+body {
+  font-family: 'Oswald', 'Arial Narrow', sans-serif;
+  font-weight: 300;
+  background: #000;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Video Background */
+.video-background {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.video-background video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  min-width: 100%;
+  min-height: 100%;
+  width: auto;
+  height: auto;
+  transform: translate(-50%, -50%);
+  filter: blur(3px) brightness(0.6) saturate(0.8);
+}
+
+.video-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    to top,
+    rgba(0,0,0,0.85) 0%,
+    rgba(0,0,0,0.4) 25%,
+    rgba(0,0,0,0.1) 50%,
+    rgba(0,0,0,0) 100%
+  );
+}
+
+#ducking-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1; 
+}
+
+body.ducking-active #ducking-overlay {
+  opacity: 1;
+}
+
+/* Drag Area - Only top portion, not covering UI */
+.drag-area {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  -webkit-app-region: drag;
+  z-index: 1;
+}
+
+/* Window Controls */
+.window-controls {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: flex;
+  gap: 8px;
+  z-index: 100;
+  -webkit-app-region: no-drag;
+}
+
+.window-btn {
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  transition: color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.window-btn:hover {
+  color: var(--text-primary);
+}
+
+.close-btn:hover {
+  color: #ff4444;
+}
+
+/* Settings Panel */
+.settings-panel {
+  position: fixed;
+  top: 52px;
+  right: 16px;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: none;
+  padding: 20px;
+  z-index: 99;
+  min-width: 220px;
+  -webkit-app-region: no-drag;
+}
+
+/* Button for device selection */
+.settings-btn {
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.settings-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* Corner decorations for settings */
+.settings-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-color) 20%, var(--border-color) 80%, transparent);
+}
+
+.settings-panel::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-color) 20%, var(--border-color) 80%, transparent);
+}
+
+.settings-header {
+  font-size: 11px;
+  letter-spacing: 4px;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: none;
+  position: relative;
+}
+
+.settings-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-color), transparent);
+}
+
+.settings-option {
+  margin-bottom: 12px;
+}
+
+.settings-option:last-child {
+  margin-bottom: 0;
+}
+
+.settings-label {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.folder-row {
+  display: flex;
+  gap: 8px;
+}
+
+.folder-icon-btn {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.folder-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.folder-icon-btn:hover {
+  color: var(--text-primary);
+}
+
+.folder-path-btn {
+  flex: 1;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.folder-path-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Startup toggle */
+.startup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  padding: 8px 0;
+}
+
+.startup-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.startup-toggle span {
+  color: var(--text-secondary);
+  transition: color 0.15s ease;
+}
+
+.startup-toggle:hover span {
+  color: var(--text-primary);
+}
+
+/* Click overlay for closing panels */
+.click-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  -webkit-app-region: no-drag;
+}
+
+.click-overlay.hidden {
+  display: none;
+}
+
+/* Music List Panel - Full Page Overlay */
+.music-list-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  z-index: 200;
+  -webkit-app-region: no-drag;
+  display: flex;
+  flex-direction: column;
+}
+
+.music-list-header {
+  font-size: 11px;
+  letter-spacing: 4px;
+  color: var(--text-secondary);
+  padding: 20px 28px;
+  border-bottom: none;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  position: relative;
+}
+
+.music-list-header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 28px;
+  right: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-color), transparent 80%);
+}
+
+.back-btn {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease;
+}
+
+.back-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Corner decorations for music list panel */
+.corner-decoration {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+.corner-decoration::before,
+.corner-decoration::after {
+  content: '';
+  position: absolute;
+  background: var(--border-color);
+}
+
+.corner-tl::before { top: 0; left: 0; width: 20px; height: 1px; }
+.corner-tl::after { top: 0; left: 0; width: 1px; height: 20px; }
+.corner-tr::before { top: 0; right: 0; width: 20px; height: 1px; }
+.corner-tr::after { top: 0; right: 0; width: 1px; height: 20px; }
+.corner-bl::before { bottom: 0; left: 0; width: 20px; height: 1px; }
+.corner-bl::after { bottom: 0; left: 0; width: 1px; height: 20px; }
+.corner-br::before { bottom: 0; right: 0; width: 20px; height: 1px; }
+.corner-br::after { bottom: 0; right: 0; width: 1px; height: 20px; }
+
+/* Main screen corners */
+.main-corner {
+  position: fixed;
+  z-index: 10;
+}
+
+.shuffle-item {
+  padding: 14px 28px;
+  cursor: pointer;
+  border-bottom: none;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  position: relative;
+}
+
+.shuffle-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 28px;
+  right: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(100, 100, 100, 0.3), transparent 80%);
+}
+
+.shuffle-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.shuffle-item svg {
+  width: 14px;
+  height: 14px;
+}
+
+.category-item {
+  padding: 12px 28px;
+  min-height: 64px;
+  cursor: pointer;
+  border-bottom: none;
+  transition: all 0.15s ease;
+  font-size: 16px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.category-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 28px;
+  right: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(100, 100, 100, 0.3), transparent 80%);
+}
+
+.category-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+.category-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+}
+
+.category-icon {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  object-position: center;
+  opacity: 0.7;
+  transition: all 0.15s ease;
+}
+
+.category-item:hover .category-icon {
+  opacity: 1;
+}
+
+.category-name {
+  font-size: 16px;
+}
+
+.category-count {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.music-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+/* Custom scrollbar for music list */
+.music-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.music-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.music-list::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 0;
+}
+
+.music-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.music-list-item {
+  padding: 14px 28px;
+  cursor: pointer;
+  border-bottom: none;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.music-list-item::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 28px;
+  right: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(100, 100, 100, 0.3), transparent 80%);
+}
+
+.music-list-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.music-list-item.active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.music-list-item .item-category {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.music-list-item .item-name {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.music-list-item:hover .item-name {
+  color: var(--text-primary);
+}
+
+.track-section.clickable {
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.track-section.clickable:hover .track-name {
+  color: var(--text-primary);
+}
+
+/* Main UI Container - Above drag area */
+.main-ui {
+  position: fixed;
+  left: 28px;
+  right: 28px;
+  bottom: 28px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 10px; /* Reduced gap */
+  height: calc(100% - 56px); /* Make it fill the vertical space */
+}
+
+/* Track Section */
+.track-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* margin-top: 10px; Removed this */
+}
+
+.track-label {
+  font-size: 11px;
+  letter-spacing: 4px;
+  color: var(--text-secondary);
+}
+
+.track-name {
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  letter-spacing: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(100% - 180px);
+}
+
+.current-category-icon {
+  position: fixed;
+  bottom: 74px;
+  right: 28px;
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+  opacity: 0.85;
+  z-index: 51;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.8));
+}
+
+/* Controls Row */
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.buttons-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+
+
+.icon-btn {
+  width: 44px;
+  height: 44px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 11px;
+  position: relative;
+}
+
+.icon-btn svg {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.icon-btn:hover {
+  color: var(--text-primary);
+}
+
+.icon-btn:active {
+  transform: scale(0.95);
+}
+
+.hidden {
+  display: none !important;
+}
+
+
+
+
+/* Volume */
+.volume-popup-container {
+  position: relative;
+}
+
+/* Invisible hover area bridge - only active when popup is open */
+.volume-popup-container .hover-bridge {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 60px;
+  height: calc(120px + 20px); /* popup height + gap + buffer */
+  pointer-events: none;
+  z-index: 199;
+}
+
+.volume-popup.active + .hover-bridge,
+.volume-popup.active ~ .hover-bridge {
+  pointer-events: auto;
+}
+
+.volume-popup {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: none;
+  width: 36px;
+  height: 120px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+  pointer-events: none;
+  z-index: 200;
+  -webkit-app-region: no-drag;
+}
+
+/* Gradient lines for volume popup */
+.volume-popup::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-color), transparent);
+}
+
+.volume-popup::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--border-color), transparent);
+}
+
+
+/* Volume popup shown via .active class (click to toggle) */
+.volume-popup.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transform: rotate(-90deg);
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--text-secondary);
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: -4px; /* Center the thumb horizontally */
+  margin-top: 0; /* Ensure no vertical offset */
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  background: var(--text-primary);
+  transform: scale(1.2);
+}
+
+/* Progress Section - Full Width */
+.progress-section {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.time {
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 50px;
+  letter-spacing: 0;
+}
+
+.time:last-child {
+  text-align: right;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  cursor: pointer;
+  position: relative;
+  transition: height 0.1s ease;
+}
+
+.progress-bar:hover {
+  height: 6px;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--text-secondary);
+  transition: width 0.1s linear;
+}
+
+.progress-bar:hover .progress-fill {
+  background: var(--text-primary);
+}

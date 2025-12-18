@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Backups
+backup/
+backups/
+*.zip
+
+# Compiled C# files
+AudioPeakCheck.exe
+AudioPeakCheck.cs
+
+# Config (user-specific)
+config.json
+
+# Logs
+*.log
+
+# IDE/Editor
+.claude/
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# Local scripts
+build.bat
+run.bat
+
+# Adobe source files
+*.ai
+*.psd
+
+# Plan files
+plan.md

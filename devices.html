@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com;">
+  <title>Select Devices</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --text-primary: #ffffff;
+      --text-secondary: #aaaaaa;
+      --text-dim: #666666;
+      --border-color: rgba(100, 100, 100, 0.4);
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      user-select: none;
+    }
+
+    html, body {
+      background: transparent;
+      height: 100%;
+    }
+
+    body {
+      font-family: 'Oswald', 'Arial Narrow', sans-serif;
+      font-weight: 300;
+      color: var(--text-secondary);
+      overflow: hidden;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 8px;
+    }
+
+    .window-frame {
+      background: rgba(0, 0, 0, 0.98);
+      border: 1px solid var(--border-color);
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .header {
+      font-size: 11px;
+      letter-spacing: 4px;
+      color: var(--text-secondary);
+      padding: 16px 20px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .header::after {
+      content: '';
+      position: absolute;
+      bottom: 0;
+      left: 20px;
+      right: 20px;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border-color), transparent 80%);
+    }
+
+    .device-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+
+    .device-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .device-list::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .device-list::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .device-list::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .device-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 20px;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+      gap: 12px;
+    }
+
+    .device-item:hover {
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .device-item.selected {
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .checkbox-icon {
+      width: 16px;
+      height: 16px;
+      border: 1px solid var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .device-item.selected .checkbox-icon {
+      border-color: var(--text-secondary);
+    }
+
+    .checkbox-icon svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .device-item.selected .checkbox-icon svg {
+      opacity: 1;
+    }
+
+    .device-item:hover .checkbox-icon {
+      border-color: var(--text-secondary);
+    }
+
+    .device-name {
+      font-size: 12px;
+      letter-spacing: 1px;
+      color: var(--text-secondary);
+      flex: 1;
+      line-height: 1.3;
+      transition: color 0.15s ease;
+    }
+
+    .device-item:hover .device-name,
+    .device-item.selected .device-name {
+      color: var(--text-primary);
+    }
+
+    .no-devices {
+      padding: 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 11px;
+    }
+
+    .footer {
+      padding: 12px 20px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .footer::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 20px;
+      right: 20px;
+      height: 1px;
+      background: linear-gradient(90deg, var(--border-color), transparent 80%);
+    }
+
+    .done-btn {
+      width: 100%;
+      padding: 10px 16px;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      font-family: inherit;
+      font-size: 11px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      text-transform: uppercase;
+    }
+
+    .done-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+      border-color: var(--text-dim);
+    }
+
+    /* Corner decorations */
+    .corner-decoration {
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      pointer-events: none;
+    }
+
+    .corner-decoration::before,
+    .corner-decoration::after {
+      content: '';
+      position: absolute;
+      background: var(--border-color);
+    }
+
+    .corner-tl { top: 4px; left: 4px; }
+    .corner-tl::before { top: 0; left: 0; width: 16px; height: 1px; }
+    .corner-tl::after { top: 0; left: 0; width: 1px; height: 16px; }
+
+    .corner-tr { top: 4px; right: 4px; }
+    .corner-tr::before { top: 0; right: 0; width: 16px; height: 1px; }
+    .corner-tr::after { top: 0; right: 0; width: 1px; height: 16px; }
+
+    .corner-bl { bottom: 4px; left: 4px; }
+    .corner-bl::before { bottom: 0; left: 0; width: 16px; height: 1px; }
+    .corner-bl::after { bottom: 0; left: 0; width: 1px; height: 16px; }
+
+    .corner-br { bottom: 4px; right: 4px; }
+    .corner-br::before { bottom: 0; right: 0; width: 16px; height: 1px; }
+    .corner-br::after { bottom: 0; right: 0; width: 1px; height: 16px; }
+  </style>
+</head>
+<body>
+  <div class="window-frame">
+    <div class="corner-decoration corner-tl"></div>
+    <div class="corner-decoration corner-tr"></div>
+    <div class="corner-decoration corner-bl"></div>
+    <div class="corner-decoration corner-br"></div>
+
+    <div class="header">Duck Against Devices</div>
+    <div class="device-list" id="deviceList">
+      <!-- Devices will be populated by devices.js -->
+    </div>
+    <div class="footer">
+      <button class="done-btn" id="doneBtn">Done</button>
+    </div>
+  </div>
+
+  <script src="devices.js"></script>
+</body>
+</html>
