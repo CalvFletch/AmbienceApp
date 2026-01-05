@@ -36,6 +36,7 @@ run.bat
 # Adobe source files
 *.ai
 *.psd
+*.psb
 
 # Plan files
 plan.md

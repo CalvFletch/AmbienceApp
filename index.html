@@ -58,8 +58,20 @@
       </div>
     </div>
     <div class="settings-option">
+      <label class="settings-label">Duck Mode</label>
+      <div class="duck-mode-row">
+        <button class="duck-mode-btn active" id="duckModeDevice" title="Duck against audio devices">Device</button>
+        <button class="duck-mode-btn" id="duckModeExe" title="Duck against specific programs">Program</button>
+      </div>
+    </div>
+    <div class="settings-option" id="deviceDuckSettings">
       <label class="settings-label">Duck Against Device</label>
       <button class="settings-btn" id="selectDevicesBtn">Select Devices</button>
+    </div>
+    <div class="settings-option hidden" id="exeDuckSettings">
+      <label class="settings-label">Duck Against Programs</label>
+      <div class="exe-list" id="exeList"></div>
+      <button class="settings-btn" id="addExeBtn">+ Add Program</button>
     </div>
     <div class="settings-option">
       <label class="settings-label startup-toggle" id="startupToggle">
@@ -167,6 +179,11 @@
 
   <!-- Audio element -->
   <audio id="audioPlayer"></audio>
+
+  <!-- Debug Log (toggle with Ctrl+D) -->
+  <div class="debug-log hidden" id="debugLog">
+    <button class="debug-copy-btn" id="debugCopyBtn">Copy Log</button>
+  </div>
 
   <script src="renderer.js"></script>
 </body>

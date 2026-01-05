@@ -13,5 +13,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openDevicesWindow: () => ipcRenderer.send('open-devices-window'),
   onDuckDevicesUpdated: (callback) => ipcRenderer.on('on-duck-devices-updated', (event, ...args) => callback(...args)),
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
-  setStartOnBoot: (enabled) => ipcRenderer.invoke('set-start-on-boot', enabled)
+  setStartOnBoot: (enabled) => ipcRenderer.invoke('set-start-on-boot', enabled),
+  // Exe-based ducking
+  getAudioSessions: () => ipcRenderer.invoke('get-audio-sessions'),
+  checkExeAudio: (exeNames) => ipcRenderer.invoke('check-exe-audio', exeNames)
 });

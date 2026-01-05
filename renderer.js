@@ -33,6 +33,58 @@ const musicListTitle = document.getElementById('musicListTitle');
 const clickOverlay = document.getElementById('clickOverlay');
 const currentCategoryIcon = document.getElementById('currentCategoryIcon');
 const startOnBootCheckbox = document.getElementById('startOnBootCheckbox');
+const debugLog = document.getElementById('debugLog');
+
+// Debug logging (toggle with Ctrl+D)
+let debugEnabled = false;
+function dlog(msg, type = '') {
+  if (!debugEnabled) return;
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+  const entry = document.createElement('div');
+  entry.className = 'log-entry' + (type ? ' ' + type : '');
+  entry.textContent = `[${time}] ${msg}`;
+  debugLog.appendChild(entry);
+  // Keep only last 100 entries
+  while (debugLog.children.length > 100) {
+    debugLog.removeChild(debugLog.firstChild);
+  }
+  debugLog.scrollTop = debugLog.scrollHeight;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'd') {
+    e.preventDefault();
+    debugEnabled = !debugEnabled;
+    debugLog.classList.toggle('hidden', !debugEnabled);
+    if (debugEnabled) {
+      dlog('Debug log enabled', 'info');
+      dlog(`Ducking: ${duckingEnabled ? 'ON' : 'OFF'}, Devices: ${selectedDuckDevices.join(', ') || 'none'}`, 'info');
+    }
+  }
+});
+
+// Copy log button
+const debugCopyBtn = document.getElementById('debugCopyBtn');
+if (debugCopyBtn) {
+  debugCopyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const entries = debugLog.querySelectorAll('.log-entry');
+    const text = Array.from(entries).map(entry => entry.textContent).join('\n');
+    if (text) {
+      navigator.clipboard.writeText(text).then(() => {
+        debugCopyBtn.textContent = 'Copied!';
+        setTimeout(() => debugCopyBtn.textContent = 'Copy Log', 1500);
+      }).catch(err => {
+        console.error('Failed to copy:', err);
+        debugCopyBtn.textContent = 'Error!';
+        setTimeout(() => debugCopyBtn.textContent = 'Copy Log', 1500);
+      });
+    } else {
+      debugCopyBtn.textContent = 'Empty!';
+      setTimeout(() => debugCopyBtn.textContent = 'Copy Log', 1500);
+    }
+  });
+}
 
 // State
 let musicFiles = [];
@@ -45,15 +97,26 @@ let fadeInterval = null;
 let isVideoFile = false;
 let duckingEnabled = false;
 let selectedDuckDevices = [];
+let selectedDuckExes = []; // List of exe names for program-based ducking
+let duckMode = 'device'; // 'device' or 'exe'
 let duckCheckInterval = null;
-let lastAudioDetectedTime = 0;
 let wasPausedByDucking = false;
+let consecutiveSilenceCount = 0;
 const DUCK_VOLUME = 0;
-const DUCK_CHECK_INTERVAL = 200;
-const DUCK_HOLD_TIME = 1500;
+const DUCK_CHECK_INTERVAL = 400; // Check every 400ms (balance between responsiveness and CPU)
+const SILENCE_CHECKS_REQUIRED = 8; // Require 8 consecutive silence checks (~3.2 seconds) before releasing
 
 let activePlayer = audioPlayer;
+let currentShufflePath = []; // Locked category path for shuffle mode
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv'];
+
+// UI elements for ducking settings
+const duckModeDeviceBtn = document.getElementById('duckModeDevice');
+const duckModeExeBtn = document.getElementById('duckModeExe');
+const deviceDuckSettings = document.getElementById('deviceDuckSettings');
+const exeDuckSettings = document.getElementById('exeDuckSettings');
+const exeList = document.getElementById('exeList');
+const addExeBtn = document.getElementById('addExeBtn');
 
 function animateTextSwitch(element, newText) {
     const oldText = element.textContent;
@@ -141,27 +204,43 @@ function startDuckingCheck() {
   if (duckCheckInterval) {
     clearInterval(duckCheckInterval);
   }
-  console.log(`Starting duck check for devices: "${selectedDuckDevices.join(', ')}"`);
+  consecutiveSilenceCount = 0;
+  dlog(`Duck check started for: ${selectedDuckDevices.join(', ')}`, 'info');
   duckCheckInterval = setInterval(async () => {
     if (!duckingEnabled || selectedDuckDevices.length === 0) {
       return;
     }
     let isAnyDevicePlaying = false;
+    let peakValues = [];
     for (const device of selectedDuckDevices) {
-        const isPlaying = await window.electronAPI.checkAudioActivity(device);
-        if (isPlaying) {
+        const result = await window.electronAPI.checkAudioActivity(device);
+        const peak = result.peak || 0;
+        const playing = result.playing || false;
+        peakValues.push(`${peak.toFixed(6)}`);
+        if (result.error) {
+          dlog(`Error: ${result.error}`, 'error');
+        }
+        if (playing) {
             isAnyDevicePlaying = true;
             break;
         }
     }
-    const now = Date.now();
+    // Log every check when debug is on
+    dlog(`Peak: ${peakValues.join(', ')} | Audio: ${isAnyDevicePlaying} | Silence#: ${consecutiveSilenceCount} | Ducking: ${isDucking}`);
+
     if (isAnyDevicePlaying) {
-      lastAudioDetectedTime = now;
+      consecutiveSilenceCount = 0; // Reset silence counter
+      if (!isDucking) {
+        dlog('>>> STARTING DUCK', 'warn');
+      }
       startDucking();
     } else if (isDucking) {
-      const timeSinceLastAudio = now - lastAudioDetectedTime;
-      if (timeSinceLastAudio >= DUCK_HOLD_TIME) {
+      consecutiveSilenceCount++;
+      // Only release after multiple consecutive silence checks
+      if (consecutiveSilenceCount >= SILENCE_CHECKS_REQUIRED) {
+        dlog(`>>> RELEASING DUCK (${consecutiveSilenceCount} silent checks)`, 'warn');
         stopDucking();
+        consecutiveSilenceCount = 0;
       }
     }
   }, DUCK_CHECK_INTERVAL);
@@ -314,6 +393,8 @@ function renderListView(pathParts = []) {
             item.className = 'music-list-item' + (index === currentIndex ? ' active' : '');
             item.innerHTML = `<div class="item-name">${track.name}</div>`;
             item.addEventListener('click', () => {
+                // Clear shuffle lock when manually selecting a track
+                currentShufflePath = [];
                 playTrack(index);
                 musicListPanel.classList.add('hidden');
             });
@@ -323,6 +404,8 @@ function renderListView(pathParts = []) {
 }
 
 function playRandomFromPath(pathParts = []) {
+    // Lock to this category for future skips
+    currentShufflePath = [...pathParts];
     const node = getNodeFromPath(pathParts);
     const tracksToShuffle = getAllTracksFromNode(node);
     if (tracksToShuffle.length === 0) return;
@@ -604,8 +687,30 @@ function playTrack(index) {
   isManuallyPaused = false;
 }
 
-// Play a random track
+// Play a random track (respects locked category if set)
 function playRandomTrack() {
+  // If we have a locked category, use it
+  if (currentShufflePath.length > 0) {
+    const node = getNodeFromPath(currentShufflePath);
+    const tracksInCategory = getAllTracksFromNode(node);
+    if (tracksInCategory.length > 0) {
+      let randomTrack;
+      if (tracksInCategory.length === 1) {
+        randomTrack = tracksInCategory[0];
+      } else {
+        // Pick a different track than current
+        const currentTrack = musicFiles[currentIndex];
+        do {
+          randomTrack = tracksInCategory[Math.floor(Math.random() * tracksInCategory.length)];
+        } while (randomTrack === currentTrack && tracksInCategory.length > 1);
+      }
+      const index = musicFiles.indexOf(randomTrack);
+      playTrack(index);
+      return;
+    }
+  }
+
+  // Fallback to all tracks
   if (musicFiles.length === 0) {
     trackName.textContent = 'No tracks found';
     return;

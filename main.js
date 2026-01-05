@@ -55,6 +55,15 @@ function loadConfigData() {
   return {};
 }
 
+function getAppPath(filename) {
+  // In production, __dirname is inside asar, but loadFile and preload still work
+  // However, we need to use app.getAppPath() for consistency
+  if (app.isPackaged) {
+    return path.join(app.getAppPath(), filename);
+  }
+  return path.join(__dirname, filename);
+}
+
 function createDevicesWindow() {
   if (devicesWindow) {
     devicesWindow.focus();
@@ -78,11 +87,11 @@ function createDevicesWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'devices-preload.js')
+      preload: getAppPath('devices-preload.js')
     }
   });
 
-  devicesWindow.loadFile('devices.html');
+  devicesWindow.loadFile(getAppPath('devices.html'));
 
   devicesWindow.on('closed', () => {
     devicesWindow = null;
@@ -120,15 +129,15 @@ function createWindow() {
     frame: false,
     transparent: true,
     resizable: true,
-    icon: path.join(__dirname, 'icon.png'),
+    icon: getAppPath('icon.png'),
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload.js')
+      preload: getAppPath('preload.js')
     }
   });
 
-  mainWindow.loadFile('index.html');
+  mainWindow.loadFile(getAppPath('index.html'));
 
   // Save window position/size on move or resize
   const saveBounds = () => {
@@ -184,15 +193,23 @@ ipcMain.on('close-devices-window', () => {
 ipcMain.handle('get-initial-devices-state', async () => {
   const config = loadConfigData();
   const selectedDevices = config.duckDevices || [];
-  
+
+  // Use the same C# helper we already compile - run with --list flag
+  const ready = await ensureAudioCheck();
+  if (!ready) {
+    return { allDevices: [], selectedDevices };
+  }
+
+  const { exePath } = getAudioCheckPaths();
+
   const allDevices = await new Promise((resolve) => {
-    exec('powershell -Command "Get-AudioDevice -List | Where-Object { $_.Type -eq \'Playback\' } | Select-Object -ExpandProperty Name"', (error, stdout) => {
+    exec(`"${exePath}" --list`, { timeout: 5000 }, (error, stdout) => {
       if (error) {
         console.error('Error getting audio devices:', error);
         resolve([]);
         return;
       }
-      const devices = stdout.trim().split('\n').filter(d => d.trim());
+      const devices = stdout.trim().split('\n').filter(d => d.trim()).map(d => d.trim());
       resolve(devices);
     });
   });
@@ -334,6 +351,8 @@ function getAudioCheckPaths() {
 const audioCheckCs = `
 using System;
 using System.Runtime.InteropServices;
+using System.Diagnostics;
+using System.Collections.Generic;
 
 class Program {
     [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
@@ -356,7 +375,7 @@ class Program {
         int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
         int OpenPropertyStore(int stgmAccess, out IPropertyStore ppProperties);
         int GetId([MarshalAs(UnmanagedType.LPWStr)] out string ppstrId);
-        int Unk();
+        int GetState(out int pdwState);
     }
 
     [Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -384,42 +403,102 @@ class Program {
         int GetPeakValue(out float pfPeak);
     }
 
+    // Audio Session interfaces for per-process audio
+    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionManager2 {
+        int GetAudioSessionControl(IntPtr AudioSessionGuid, int StreamFlags, IntPtr SessionControl);
+        int GetSimpleAudioVolume(IntPtr AudioSessionGuid, int StreamFlags, IntPtr AudioVolume);
+        int GetSessionEnumerator(out IAudioSessionEnumerator SessionEnum);
+    }
+
+    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionEnumerator {
+        int GetCount(out int SessionCount);
+        int GetSession(int SessionCount, out IAudioSessionControl Session);
+    }
+
+    [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl {
+        int unk1(); int unk2(); int unk3(); int unk4(); int unk5(); int unk6(); int unk7(); int unk8();
+    }
+
+    [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IAudioSessionControl2 : IAudioSessionControl {
+        new int unk1(); new int unk2(); new int unk3(); new int unk4(); new int unk5(); new int unk6(); new int unk7(); new int unk8();
+        int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int GetProcessId(out uint pRetVal);
+        int IsSystemSoundsSession();
+        int SetDuckingPreference(bool optOut);
+    }
+
     static readonly Guid IID_IAudioMeterInformation = new Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064");
+    static readonly Guid IID_IAudioSessionManager2 = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
     static readonly PROPERTYKEY PKEY_Device_FriendlyName = new PROPERTYKEY {
         fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 14
     };
 
     static void Main(string[] args) {
         try {
-            string targetDevice = args.Length > 0 ? args[0] : "";
+            if (args.Length == 0) {
+                Console.WriteLine("-1");
+                return;
+            }
+
+            string mode = args[0];
             var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
 
-            IMMDeviceCollection devices;
-            enumerator.EnumAudioEndpoints(0, 1, out devices); // eRender, DEVICE_STATE_ACTIVE
+            // --list: List audio devices
+            if (mode == "--list") {
+                IMMDeviceCollection devices;
+                enumerator.EnumAudioEndpoints(0, 1, out devices);
+                int count; devices.GetCount(out count);
+                for (int i = 0; i < count; i++) {
+                    IMMDevice device; devices.Item(i, out device);
+                    IPropertyStore props; device.OpenPropertyStore(0, out props);
+                    PROPVARIANT name; var key = PKEY_Device_FriendlyName;
+                    props.GetValue(ref key, out name);
+                    Console.WriteLine(Marshal.PtrToStringUni(name.p1));
+                }
+                return;
+            }
 
-            int count;
-            devices.GetCount(out count);
+            // --list-sessions: List processes with active audio sessions
+            if (mode == "--list-sessions") {
+                var sessions = GetAudioSessions(enumerator);
+                foreach (var s in sessions) {
+                    Console.WriteLine(s);
+                }
+                return;
+            }
 
-            for (int i = 0; i < count; i++) {
-                IMMDevice device;
-                devices.Item(i, out device);
+            // --check-exe <exe1> <exe2> ...: Check if any of the specified exes are playing audio
+            if (mode == "--check-exe" && args.Length > 1) {
+                var targetExes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 1; i < args.Length; i++) {
+                    targetExes.Add(args[i].ToLowerInvariant());
+                }
+                float maxPeak = CheckExeAudio(enumerator, targetExes);
+                Console.WriteLine(maxPeak);
+                return;
+            }
 
-                IPropertyStore props;
-                device.OpenPropertyStore(0, out props);
-
-                PROPVARIANT name;
-                PROPERTYKEY key = PKEY_Device_FriendlyName;
+            // Default: Check device by name (legacy mode)
+            string targetDevice = args[0];
+            IMMDeviceCollection devs;
+            enumerator.EnumAudioEndpoints(0, 1, out devs);
+            int cnt; devs.GetCount(out cnt);
+            for (int i = 0; i < cnt; i++) {
+                IMMDevice device; devs.Item(i, out device);
+                IPropertyStore props; device.OpenPropertyStore(0, out props);
+                PROPVARIANT name; var key = PKEY_Device_FriendlyName;
                 props.GetValue(ref key, out name);
                 string deviceName = Marshal.PtrToStringUni(name.p1);
-
-                if (string.IsNullOrEmpty(targetDevice) || deviceName.Contains(targetDevice)) {
-                    object meterObj;
-                    Guid iid = IID_IAudioMeterInformation;
+                if (deviceName.Contains(targetDevice)) {
+                    object meterObj; Guid iid = IID_IAudioMeterInformation;
                     device.Activate(ref iid, 1, IntPtr.Zero, out meterObj);
                     var meter = (IAudioMeterInformation)meterObj;
-
-                    float peak;
-                    meter.GetPeakValue(out peak);
+                    float peak; meter.GetPeakValue(out peak);
                     Console.WriteLine(peak);
                     return;
                 }
@@ -429,20 +508,102 @@ class Program {
             Console.WriteLine("-99");
         }
     }
+
+    static List<string> GetAudioSessions(IMMDeviceEnumerator enumerator) {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try {
+            IMMDevice defDevice;
+            enumerator.GetDefaultAudioEndpoint(0, 1, out defDevice);
+            object mgrObj; Guid iid = IID_IAudioSessionManager2;
+            defDevice.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
+            var mgr = (IAudioSessionManager2)mgrObj;
+            IAudioSessionEnumerator sessionEnum;
+            mgr.GetSessionEnumerator(out sessionEnum);
+            int count; sessionEnum.GetCount(out count);
+            for (int i = 0; i < count; i++) {
+                try {
+                    IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
+                    var ctrl2 = (IAudioSessionControl2)ctrl;
+                    uint pid; ctrl2.GetProcessId(out pid);
+                    if (pid == 0) continue;
+                    var proc = Process.GetProcessById((int)pid);
+                    string exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
+                    if (!seen.Contains(exeName)) {
+                        seen.Add(exeName);
+                        result.Add(exeName);
+                    }
+                } catch {}
+            }
+        } catch {}
+        return result;
+    }
+
+    static float CheckExeAudio(IMMDeviceEnumerator enumerator, HashSet<string> targetExes) {
+        float maxPeak = 0;
+        try {
+            IMMDevice defDevice;
+            enumerator.GetDefaultAudioEndpoint(0, 1, out defDevice);
+            object mgrObj; Guid iid = IID_IAudioSessionManager2;
+            defDevice.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
+            var mgr = (IAudioSessionManager2)mgrObj;
+            IAudioSessionEnumerator sessionEnum;
+            mgr.GetSessionEnumerator(out sessionEnum);
+            int count; sessionEnum.GetCount(out count);
+            for (int i = 0; i < count; i++) {
+                try {
+                    IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
+                    var ctrl2 = (IAudioSessionControl2)ctrl;
+                    uint pid; ctrl2.GetProcessId(out pid);
+                    if (pid == 0) continue;
+                    var proc = Process.GetProcessById((int)pid);
+                    string exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
+                    if (targetExes.Contains(exeName)) {
+                        // Get meter for this session
+                        object meterObj; Guid meterId = IID_IAudioMeterInformation;
+                        try {
+                            ((IMMDevice)defDevice).Activate(ref meterId, 1, IntPtr.Zero, out meterObj);
+                            // Note: This gets device peak, not per-session. For true per-session we need IAudioMeterInformation from session
+                            // But sessions don't directly expose meter. We check if process is in audio session as proxy.
+                            var meter = meterObj as IAudioMeterInformation;
+                            if (meter != null) {
+                                float peak; meter.GetPeakValue(out peak);
+                                if (peak > maxPeak) maxPeak = peak;
+                            }
+                        } catch {}
+                    }
+                } catch {}
+            }
+        } catch {}
+        return maxPeak;
+    }
 }
 `;
 
 // Write and compile the C# helper on first run
+// Version is used to force recompile when source changes
+const AUDIO_CHECK_VERSION = '3';
 let audioCheckReady = false;
 
 function ensureAudioCheck() {
   if (audioCheckReady) return Promise.resolve(true);
 
   const { csPath, exePath } = getAudioCheckPaths();
+  const versionPath = path.join(app.getPath('userData'), 'AudioPeakCheck.version');
 
   return new Promise((resolve) => {
-    // Check if exe already exists
-    if (fs.existsSync(exePath)) {
+    // Check if exe already exists with correct version
+    let needsCompile = true;
+    if (fs.existsSync(exePath) && fs.existsSync(versionPath)) {
+      try {
+        const currentVersion = fs.readFileSync(versionPath, 'utf8').trim();
+        if (currentVersion === AUDIO_CHECK_VERSION) {
+          needsCompile = false;
+        }
+      } catch (e) {}
+    }
+
+    if (!needsCompile) {
       audioCheckReady = true;
       resolve(true);
       return;
@@ -476,43 +637,134 @@ function ensureAudioCheck() {
         resolve(false);
         return;
       }
+      // Write version file on successful compile
+      try {
+        fs.writeFileSync(versionPath, AUDIO_CHECK_VERSION);
+      } catch (e) {}
       audioCheckReady = true;
       resolve(true);
     });
   });
 }
 
+// Throttle audio checks to prevent overlapping process spawns
+let audioCheckInProgress = false;
+let lastAudioCheckResult = { peak: 0, playing: false };
+
 ipcMain.handle('check-audio-activity', async (event, deviceName) => {
   if (!deviceName) {
-    return false;
+    return { peak: 0, playing: false };
+  }
+
+  // If a check is already in progress, return the last known result
+  if (audioCheckInProgress) {
+    return lastAudioCheckResult;
   }
 
   // Make sure exe is ready
   const ready = await ensureAudioCheck();
   if (!ready) {
-    return false;
+    return { peak: 0, playing: false, error: 'not ready' };
+  }
+
+  audioCheckInProgress = true;
+  const { exePath } = getAudioCheckPaths();
+
+  return new Promise((resolve) => {
+    exec(`"${exePath}" "${deviceName}"`, { timeout: 1000 }, (error, stdout, stderr) => {
+      audioCheckInProgress = false;
+
+      if (error) {
+        const result = { peak: 0, playing: false, error: error.message };
+        lastAudioCheckResult = result;
+        resolve(result);
+        return;
+      }
+
+      const rawResult = stdout.trim();
+      const peakValue = parseFloat(rawResult);
+
+      if (!isNaN(peakValue) && peakValue >= 0) {
+        const isPlaying = peakValue > 0.0001;
+        const result = { peak: peakValue, playing: isPlaying };
+        lastAudioCheckResult = result;
+        resolve(result);
+      } else {
+        const result = { peak: 0, playing: false, raw: rawResult };
+        lastAudioCheckResult = result;
+        resolve(result);
+      }
+    });
+  });
+});
+
+// Get list of processes with active audio sessions
+ipcMain.handle('get-audio-sessions', async () => {
+  const ready = await ensureAudioCheck();
+  if (!ready) {
+    return [];
   }
 
   const { exePath } = getAudioCheckPaths();
 
   return new Promise((resolve) => {
-    exec(`"${exePath}" "${deviceName}"`, { timeout: 2000 }, (error, stdout, stderr) => {
+    exec(`"${exePath}" --list-sessions`, { timeout: 5000 }, (error, stdout) => {
       if (error) {
-        console.error('Audio check error:', error.message);
-        resolve(false);
+        console.error('Error getting audio sessions:', error);
+        resolve([]);
+        return;
+      }
+      const sessions = stdout.trim().split('\n').filter(s => s.trim()).map(s => s.trim());
+      resolve(sessions);
+    });
+  });
+});
+
+// Check audio activity for specific exe names
+let exeCheckInProgress = false;
+let lastExeCheckResult = { peak: 0, playing: false };
+
+ipcMain.handle('check-exe-audio', async (event, exeNames) => {
+  if (!exeNames || exeNames.length === 0) {
+    return { peak: 0, playing: false };
+  }
+
+  if (exeCheckInProgress) {
+    return lastExeCheckResult;
+  }
+
+  const ready = await ensureAudioCheck();
+  if (!ready) {
+    return { peak: 0, playing: false, error: 'not ready' };
+  }
+
+  exeCheckInProgress = true;
+  const { exePath } = getAudioCheckPaths();
+  const exeArgs = exeNames.map(e => `"${e}"`).join(' ');
+
+  return new Promise((resolve) => {
+    exec(`"${exePath}" --check-exe ${exeArgs}`, { timeout: 1000 }, (error, stdout, stderr) => {
+      exeCheckInProgress = false;
+
+      if (error) {
+        const result = { peak: 0, playing: false, error: error.message };
+        lastExeCheckResult = result;
+        resolve(result);
         return;
       }
 
-      const result = stdout.trim();
-      const peakValue = parseFloat(result);
+      const rawResult = stdout.trim();
+      const peakValue = parseFloat(rawResult);
 
       if (!isNaN(peakValue) && peakValue >= 0) {
         const isPlaying = peakValue > 0.0001;
-        // console.log(`Peak: ${peakValue.toFixed(4)}, Playing: ${isPlaying}`);
-        resolve(isPlaying);
+        const result = { peak: peakValue, playing: isPlaying };
+        lastExeCheckResult = result;
+        resolve(result);
       } else {
-        // console.log(`Audio check result: "${result}"`);
-        resolve(false);
+        const result = { peak: 0, playing: false, raw: rawResult };
+        lastExeCheckResult = result;
+        resolve(result);
       }
     });
   });

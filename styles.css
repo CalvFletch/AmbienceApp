@@ -289,6 +289,79 @@ body.ducking-active #ducking-overlay {
   color: var(--text-primary);
 }
 
+/* Duck mode toggle */
+.duck-mode-row {
+  display: flex;
+  gap: 8px;
+}
+
+.duck-mode-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-dim);
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.duck-mode-btn:hover {
+  color: var(--text-secondary);
+  border-color: var(--text-secondary);
+}
+
+.duck-mode-btn.active {
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Exe list for program-based ducking */
+.exe-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.exe-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.exe-item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exe-item-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.exe-item-remove:hover {
+  color: #f44;
+}
+
 /* Click overlay for closing panels */
 .click-overlay {
   position: fixed;
@@ -799,4 +872,60 @@ body.ducking-active #ducking-overlay {
 
 .progress-bar:hover .progress-fill {
   background: var(--text-primary);
+}
+
+/* Debug Log */
+.debug-log {
+  position: fixed;
+  bottom: 60px;
+  left: 12px;
+  right: 12px;
+  max-height: 150px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(100, 100, 100, 0.4);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 10px;
+  color: #0f0;
+  padding: 8px;
+  overflow-y: auto;
+  z-index: 9999;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.debug-log .log-entry {
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.debug-log .log-entry.warn {
+  color: #ff0;
+}
+
+.debug-log .log-entry.error {
+  color: #f44;
+}
+
+.debug-log .log-entry.info {
+  color: #0af;
+}
+
+.debug-copy-btn {
+  position: sticky;
+  top: 0;
+  right: 0;
+  float: right;
+  background: #333;
+  color: #0f0;
+  border: 1px solid #0f0;
+  padding: 2px 8px;
+  font-family: 'Consolas', monospace;
+  font-size: 10px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.debug-copy-btn:hover {
+  background: #0f0;
+  color: #000;
 }
