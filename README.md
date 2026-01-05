@@ -1,8 +1,8 @@
-# Ambience App
-
 ![Ambience App](banner.png)
 
 A Skyrim-themed ambient music player with auto-ducking. Built with Electron.
+
+![Example](example.png)
 
 ## Features
 
