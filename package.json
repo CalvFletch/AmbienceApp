@@ -32,7 +32,8 @@
     "nsis": {
       "oneClick": true,
       "allowToChangeInstallationDirectory": false,
-      "differentialPackage": false
+      "differentialPackage": false,
+      "include": "installer.nsh"
     },
     "compression": "store",
     "files": [
