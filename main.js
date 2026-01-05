@@ -769,3 +769,31 @@ ipcMain.handle('check-exe-audio', async (event, exeNames) => {
     });
   });
 });
+
+// Get list of all running processes
+ipcMain.handle('get-running-processes', async () => {
+  return new Promise((resolve) => {
+    exec('wmic process get name /format:list', { timeout: 5000 }, (error, stdout) => {
+      if (error) {
+        console.error('Error getting processes:', error);
+        resolve([]);
+        return;
+      }
+      const seen = new Set();
+      const processes = [];
+      const lines = stdout.split('\n');
+      for (const line of lines) {
+        const match = line.match(/^Name=(.+\.exe)$/i);
+        if (match) {
+          const name = match[1].toLowerCase();
+          if (!seen.has(name)) {
+            seen.add(name);
+            processes.push(name);
+          }
+        }
+      }
+      processes.sort();
+      resolve(processes);
+    });
+  });
+});

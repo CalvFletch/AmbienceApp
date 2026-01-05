@@ -16,5 +16,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setStartOnBoot: (enabled) => ipcRenderer.invoke('set-start-on-boot', enabled),
   // Exe-based ducking
   getAudioSessions: () => ipcRenderer.invoke('get-audio-sessions'),
-  checkExeAudio: (exeNames) => ipcRenderer.invoke('check-exe-audio', exeNames)
+  checkExeAudio: (exeNames) => ipcRenderer.invoke('check-exe-audio', exeNames),
+  getRunningProcesses: () => ipcRenderer.invoke('get-running-processes')
 });

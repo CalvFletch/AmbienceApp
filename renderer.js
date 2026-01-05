@@ -183,6 +183,7 @@ function stopDucking(fadeDuration = 15000) {
 
 async function init() {
   setupEventListeners();
+  setupDuckModeUI();
   await loadSettings();
   await loadMusicFolderPath();
   await loadStartupSetting();
@@ -190,8 +191,11 @@ async function init() {
   if (musicFiles.length > 0) {
     playRandomTrack();
   }
-  if (duckingEnabled && selectedDuckDevices.length > 0) {
-    startDuckingCheck();
+  if (duckingEnabled) {
+    if ((duckMode === 'device' && selectedDuckDevices.length > 0) ||
+        (duckMode === 'exe' && selectedDuckExes.length > 0)) {
+      startDuckingCheck();
+    }
   }
 }
 
@@ -205,38 +209,54 @@ function startDuckingCheck() {
     clearInterval(duckCheckInterval);
   }
   consecutiveSilenceCount = 0;
-  dlog(`Duck check started for: ${selectedDuckDevices.join(', ')}`, 'info');
+
+  if (duckMode === 'device') {
+    dlog(`Duck check started (Device mode): ${selectedDuckDevices.join(', ')}`, 'info');
+  } else {
+    dlog(`Duck check started (Program mode): ${selectedDuckExes.join(', ')}`, 'info');
+  }
+
   duckCheckInterval = setInterval(async () => {
-    if (!duckingEnabled || selectedDuckDevices.length === 0) {
-      return;
-    }
-    let isAnyDevicePlaying = false;
-    let peakValues = [];
-    for (const device of selectedDuckDevices) {
+    if (!duckingEnabled) return;
+
+    let isPlaying = false;
+    let peakValue = 0;
+
+    if (duckMode === 'device') {
+      if (selectedDuckDevices.length === 0) return;
+      for (const device of selectedDuckDevices) {
         const result = await window.electronAPI.checkAudioActivity(device);
-        const peak = result.peak || 0;
-        const playing = result.playing || false;
-        peakValues.push(`${peak.toFixed(6)}`);
         if (result.error) {
           dlog(`Error: ${result.error}`, 'error');
         }
-        if (playing) {
-            isAnyDevicePlaying = true;
-            break;
+        if (result.playing) {
+          isPlaying = true;
+          peakValue = Math.max(peakValue, result.peak || 0);
+          break;
         }
+        peakValue = Math.max(peakValue, result.peak || 0);
+      }
+    } else {
+      // Exe mode
+      if (selectedDuckExes.length === 0) return;
+      const result = await window.electronAPI.checkExeAudio(selectedDuckExes);
+      if (result.error) {
+        dlog(`Error: ${result.error}`, 'error');
+      }
+      isPlaying = result.playing || false;
+      peakValue = result.peak || 0;
     }
-    // Log every check when debug is on
-    dlog(`Peak: ${peakValues.join(', ')} | Audio: ${isAnyDevicePlaying} | Silence#: ${consecutiveSilenceCount} | Ducking: ${isDucking}`);
 
-    if (isAnyDevicePlaying) {
-      consecutiveSilenceCount = 0; // Reset silence counter
+    dlog(`Peak: ${peakValue.toFixed(6)} | Audio: ${isPlaying} | Silence#: ${consecutiveSilenceCount} | Ducking: ${isDucking}`);
+
+    if (isPlaying) {
+      consecutiveSilenceCount = 0;
       if (!isDucking) {
         dlog('>>> STARTING DUCK', 'warn');
       }
       startDucking();
     } else if (isDucking) {
       consecutiveSilenceCount++;
-      // Only release after multiple consecutive silence checks
       if (consecutiveSilenceCount >= SILENCE_CHECKS_REQUIRED) {
         dlog(`>>> RELEASING DUCK (${consecutiveSilenceCount} silent checks)`, 'warn');
         stopDucking();
@@ -258,6 +278,14 @@ async function loadSettings() {
   if (settings.duckDevices && Array.isArray(settings.duckDevices)) {
     selectedDuckDevices = settings.duckDevices;
   }
+  if (settings.duckExes && Array.isArray(settings.duckExes)) {
+    selectedDuckExes = settings.duckExes;
+    renderExeList();
+  }
+  if (settings.duckMode) {
+    duckMode = settings.duckMode;
+    updateDuckModeUI();
+  }
   if (settings.volume !== undefined) {
     targetVolume = settings.volume;
     currentVolume = settings.volume;
@@ -275,9 +303,100 @@ async function loadSettings() {
 async function saveCurrentSettings() {
   await window.electronAPI.saveSettings({
     duckDevices: selectedDuckDevices,
+    duckExes: selectedDuckExes,
+    duckMode: duckMode,
     volume: targetVolume,
     duckingEnabled: duckingEnabled
   });
+}
+
+function setupDuckModeUI() {
+  // Mode toggle buttons
+  duckModeDeviceBtn.addEventListener('click', () => {
+    duckMode = 'device';
+    updateDuckModeUI();
+    saveCurrentSettings();
+    restartDuckingIfEnabled();
+  });
+
+  duckModeExeBtn.addEventListener('click', () => {
+    duckMode = 'exe';
+    updateDuckModeUI();
+    saveCurrentSettings();
+    restartDuckingIfEnabled();
+  });
+
+  // Add exe button
+  addExeBtn.addEventListener('click', async () => {
+    const processes = await window.electronAPI.getRunningProcesses();
+    if (processes.length === 0) {
+      alert('No running processes found.');
+      return;
+    }
+    // Filter out already selected ones
+    const available = processes.filter(s => !selectedDuckExes.includes(s));
+    if (available.length === 0) {
+      alert('All running programs are already added.');
+      return;
+    }
+    const exe = prompt(`Running programs:\n${available.slice(0, 30).join('\n')}${available.length > 30 ? '\n...' : ''}\n\nEnter program name to add:`, available[0]);
+    if (exe && exe.trim()) {
+      const exeName = exe.trim().toLowerCase();
+      if (!exeName.endsWith('.exe')) {
+        alert('Program name must end with .exe');
+        return;
+      }
+      if (!selectedDuckExes.includes(exeName)) {
+        selectedDuckExes.push(exeName);
+        renderExeList();
+        saveCurrentSettings();
+        restartDuckingIfEnabled();
+      }
+    }
+  });
+}
+
+function updateDuckModeUI() {
+  if (duckMode === 'device') {
+    duckModeDeviceBtn.classList.add('active');
+    duckModeExeBtn.classList.remove('active');
+    deviceDuckSettings.classList.remove('hidden');
+    exeDuckSettings.classList.add('hidden');
+  } else {
+    duckModeDeviceBtn.classList.remove('active');
+    duckModeExeBtn.classList.add('active');
+    deviceDuckSettings.classList.add('hidden');
+    exeDuckSettings.classList.remove('hidden');
+  }
+}
+
+function renderExeList() {
+  exeList.innerHTML = '';
+  selectedDuckExes.forEach(exe => {
+    const item = document.createElement('div');
+    item.className = 'exe-item';
+    item.innerHTML = `
+      <span class="exe-item-name">${exe}</span>
+      <button class="exe-item-remove" title="Remove">×</button>
+    `;
+    item.querySelector('.exe-item-remove').addEventListener('click', () => {
+      selectedDuckExes = selectedDuckExes.filter(e => e !== exe);
+      renderExeList();
+      saveCurrentSettings();
+      restartDuckingIfEnabled();
+    });
+    exeList.appendChild(item);
+  });
+}
+
+function restartDuckingIfEnabled() {
+  if (duckingEnabled) {
+    stopDuckingCheck();
+    if ((duckMode === 'device' && selectedDuckDevices.length > 0) ||
+        (duckMode === 'exe' && selectedDuckExes.length > 0)) {
+      startDuckingCheck();
+    }
+  }
 }
 
 async function loadMusicFolderPath() {
