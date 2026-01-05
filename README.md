@@ -2,6 +2,8 @@
 
 A Skyrim-themed ambient music player with auto-ducking. Built with Electron.
 
+![Example](example.png)
+
 ## Features
 
 - **Category-based music organization** with custom folder icons
