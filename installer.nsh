@@ -4,7 +4,6 @@
 Var Dialog
 Var DownloadMusicCheckbox
 Var DownloadMusic
-Var MusicFolderPath
 
 ; Custom page for music download option
 Page custom MusicDownloadPage MusicDownloadPageLeave
@@ -42,11 +41,8 @@ FunctionEnd
   ${If} $DownloadMusic == ${BST_CHECKED}
     DetailPrint "Preparing to download music library..."
 
-    ; Set music folder path
-    StrCpy $MusicFolderPath "$MUSIC\Ambience"
-
     ; Create music directory
-    CreateDirectory "$MusicFolderPath"
+    CreateDirectory "$MUSIC\Ambience"
 
     DetailPrint "Downloading music library parts (4.7GB total)..."
     DetailPrint "This may take several minutes. Please wait..."
@@ -118,11 +114,11 @@ FunctionEnd
     ${EndIf}
 
     DetailPrint "Files combined successfully!"
-    DetailPrint "Extracting music library to $MusicFolderPath..."
+    DetailPrint "Extracting music library to $MUSIC\Ambience..."
     DetailPrint "This may take a few minutes..."
 
     ; Use PowerShell to extract the zip file (built into Windows 10+)
-    nsExec::ExecToLog 'powershell -Command "Expand-Archive -Path \"$TEMP\Ambience.zip\" -DestinationPath \"$MusicFolderPath\" -Force"'
+    nsExec::ExecToLog 'powershell -Command "Expand-Archive -Path \"$TEMP\Ambience.zip\" -DestinationPath \"$MUSIC\Ambience\" -Force"'
     Pop $0
 
     ${If} $0 == "0"
