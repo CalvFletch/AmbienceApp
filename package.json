@@ -1,6 +1,6 @@
 {
   "name": "ambience-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Skyrim-themed ambient music player with auto-ducking",
   "main": "main.js",
   "scripts": {
