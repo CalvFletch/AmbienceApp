@@ -38,49 +38,6 @@
     <button class="window-btn close-btn" id="closeBtn">✕</button>
   </div>
 
-  <!-- Click Overlay for closing panels -->
-  <div class="click-overlay hidden" id="clickOverlay"></div>
-
-  <!-- Settings Panel -->
-  <div class="settings-panel hidden" id="settingsPanel">
-    <div class="settings-header">SETTINGS</div>
-    <div class="settings-option">
-      <label class="settings-label">Music Folder</label>
-      <div class="folder-row">
-        <button class="folder-icon-btn" id="openFolderBtn" title="Open Folder">
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
-          </svg>
-        </button>
-        <button class="folder-path-btn" id="selectFolderBtn" title="Click to change folder">
-          <span id="folderPathText">./music</span>
-        </button>
-      </div>
-    </div>
-    <div class="settings-option">
-      <label class="settings-label">Duck Mode</label>
-      <div class="duck-mode-row">
-        <button class="duck-mode-btn active" id="duckModeDevice" title="Duck against audio devices">Device</button>
-        <button class="duck-mode-btn" id="duckModeExe" title="Duck against specific programs">Program</button>
-      </div>
-    </div>
-    <div class="settings-option" id="deviceDuckSettings">
-      <label class="settings-label">Duck Against Device</label>
-      <button class="settings-btn" id="selectDevicesBtn">Select Devices</button>
-    </div>
-    <div class="settings-option hidden" id="exeDuckSettings">
-      <label class="settings-label">Duck Against Programs</label>
-      <div class="exe-list" id="exeList"></div>
-      <button class="settings-btn" id="addExeBtn">+ Add Program</button>
-    </div>
-    <div class="settings-option">
-      <label class="settings-label startup-toggle" id="startupToggle">
-        <input type="checkbox" id="startOnBootCheckbox">
-        <span>Start with Windows</span>
-      </label>
-    </div>
-  </div>
-
   <!-- Music List Panel (Full Page) -->
   <div class="music-list-panel hidden" id="musicListPanel">
     <!-- Corner decorations -->
@@ -180,9 +137,28 @@
   <!-- Audio element -->
   <audio id="audioPlayer"></audio>
 
+  <!-- Update notification -->
+  <div class="update-notification hidden" id="updateNotification">
+    <span class="update-text">Update available: <span id="updateVersion"></span></span>
+    <button class="update-btn" id="updateBtn">Download</button>
+    <button class="update-dismiss" id="updateDismiss">×</button>
+  </div>
+
   <!-- Debug Log (toggle with Ctrl+D) -->
   <div class="debug-log hidden" id="debugLog">
     <button class="debug-copy-btn" id="debugCopyBtn">Copy Log</button>
+  </div>
+
+  <!-- Process Picker Modal -->
+  <div class="process-picker-overlay hidden" id="processPickerOverlay">
+    <div class="process-picker-modal">
+      <div class="process-picker-header">
+        <span>SELECT PROGRAM</span>
+        <button class="process-picker-close" id="processPickerClose">×</button>
+      </div>
+      <input type="text" class="process-picker-search" id="processPickerSearch" placeholder="Search...">
+      <div class="process-picker-list" id="processPickerList"></div>
+    </div>
   </div>
 
   <script src="renderer.js"></script>

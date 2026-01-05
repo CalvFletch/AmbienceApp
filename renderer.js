@@ -21,18 +21,11 @@ const duckBtn = document.getElementById('duckBtn');
 const duckIconOn = document.getElementById('duckIconOn');
 const duckIconOff = document.getElementById('duckIconOff');
 const settingsBtn = document.getElementById('settingsBtn');
-const settingsPanel = document.getElementById('settingsPanel');
-const openFolderBtn = document.getElementById('openFolderBtn');
-const selectFolderBtn = document.getElementById('selectFolderBtn');
-const folderPathText = document.getElementById('folderPathText');
-const selectDevicesBtn = document.getElementById('selectDevicesBtn');
 const musicListPanel = document.getElementById('musicListPanel');
 const musicList = document.getElementById('musicList');
 const musicListBackBtn = document.getElementById('musicListBackBtn');
 const musicListTitle = document.getElementById('musicListTitle');
-const clickOverlay = document.getElementById('clickOverlay');
 const currentCategoryIcon = document.getElementById('currentCategoryIcon');
-const startOnBootCheckbox = document.getElementById('startOnBootCheckbox');
 const debugLog = document.getElementById('debugLog');
 
 // Debug logging (toggle with Ctrl+D)
@@ -110,14 +103,6 @@ let activePlayer = audioPlayer;
 let currentShufflePath = []; // Locked category path for shuffle mode
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv'];
 
-// UI elements for ducking settings
-const duckModeDeviceBtn = document.getElementById('duckModeDevice');
-const duckModeExeBtn = document.getElementById('duckModeExe');
-const deviceDuckSettings = document.getElementById('deviceDuckSettings');
-const exeDuckSettings = document.getElementById('exeDuckSettings');
-const exeList = document.getElementById('exeList');
-const addExeBtn = document.getElementById('addExeBtn');
-
 function animateTextSwitch(element, newText) {
     const oldText = element.textContent;
     const duration = 300;
@@ -183,10 +168,8 @@ function stopDucking(fadeDuration = 15000) {
 
 async function init() {
   setupEventListeners();
-  setupDuckModeUI();
+  setupUpdateNotification();
   await loadSettings();
-  await loadMusicFolderPath();
-  await loadStartupSetting();
   await loadMusicFromFolder();
   if (musicFiles.length > 0) {
     playRandomTrack();
@@ -197,12 +180,10 @@ async function init() {
       startDuckingCheck();
     }
   }
+  // Check for updates after a short delay
+  setTimeout(checkForUpdates, 3000);
 }
 
-async function loadStartupSetting() {
-  const enabled = await window.electronAPI.getStartOnBoot();
-  startOnBootCheckbox.checked = enabled;
-}
 
 function startDuckingCheck() {
   if (duckCheckInterval) {
@@ -280,11 +261,9 @@ async function loadSettings() {
   }
   if (settings.duckExes && Array.isArray(settings.duckExes)) {
     selectedDuckExes = settings.duckExes;
-    renderExeList();
   }
   if (settings.duckMode) {
     duckMode = settings.duckMode;
-    updateDuckModeUI();
   }
   if (settings.volume !== undefined) {
     targetVolume = settings.volume;
@@ -300,6 +279,51 @@ async function loadSettings() {
   }
 }
 
+// Update notification
+let updateReleaseUrl = '';
+let dismissedUpdateVersion = '';
+
+function setupUpdateNotification() {
+  const updateBtn = document.getElementById('updateBtn');
+  const updateDismiss = document.getElementById('updateDismiss');
+  const updateNotification = document.getElementById('updateNotification');
+
+  updateBtn.addEventListener('click', () => {
+    if (updateReleaseUrl) {
+      window.electronAPI.openExternalUrl(updateReleaseUrl);
+    }
+  });
+
+  updateDismiss.addEventListener('click', async () => {
+    updateNotification.classList.add('hidden');
+    // Remember dismissed version
+    if (dismissedUpdateVersion) {
+      await window.electronAPI.saveDismissedUpdate(dismissedUpdateVersion);
+    }
+  });
+}
+
+async function checkForUpdates() {
+  try {
+    const result = await window.electronAPI.checkForUpdates();
+    if (result.hasUpdate) {
+      // Check if user already dismissed this version
+      const dismissed = await window.electronAPI.getDismissedUpdate();
+      if (dismissed === result.latestVersion) {
+        dlog(`Update v${result.latestVersion} was dismissed by user`, 'info');
+        return;
+      }
+      dismissedUpdateVersion = result.latestVersion;
+      updateReleaseUrl = result.releaseUrl;
+      document.getElementById('updateVersion').textContent = `v${result.latestVersion}`;
+      document.getElementById('updateNotification').classList.remove('hidden');
+      dlog(`Update available: v${result.latestVersion} (current: v${result.currentVersion})`, 'info');
+    }
+  } catch (e) {
+    // Silently fail - update check is not critical
+  }
+}
+
 async function saveCurrentSettings() {
   await window.electronAPI.saveSettings({
     duckDevices: selectedDuckDevices,
@@ -307,85 +331,6 @@ async function saveCurrentSettings() {
     duckMode: duckMode,
     volume: targetVolume,
     duckingEnabled: duckingEnabled
-  });
-}
-
-function setupDuckModeUI() {
-  // Mode toggle buttons
-  duckModeDeviceBtn.addEventListener('click', () => {
-    duckMode = 'device';
-    updateDuckModeUI();
-    saveCurrentSettings();
-    restartDuckingIfEnabled();
-  });
-
-  duckModeExeBtn.addEventListener('click', () => {
-    duckMode = 'exe';
-    updateDuckModeUI();
-    saveCurrentSettings();
-    restartDuckingIfEnabled();
-  });
-
-  // Add exe button
-  addExeBtn.addEventListener('click', async () => {
-    const processes = await window.electronAPI.getRunningProcesses();
-    if (processes.length === 0) {
-      alert('No running processes found.');
-      return;
-    }
-    // Filter out already selected ones
-    const available = processes.filter(s => !selectedDuckExes.includes(s));
-    if (available.length === 0) {
-      alert('All running programs are already added.');
-      return;
-    }
-    const exe = prompt(`Running programs:\n${available.slice(0, 30).join('\n')}${available.length > 30 ? '\n...' : ''}\n\nEnter program name to add:`, available[0]);
-    if (exe && exe.trim()) {
-      const exeName = exe.trim().toLowerCase();
-      if (!exeName.endsWith('.exe')) {
-        alert('Program name must end with .exe');
-        return;
-      }
-      if (!selectedDuckExes.includes(exeName)) {
-        selectedDuckExes.push(exeName);
-        renderExeList();
-        saveCurrentSettings();
-        restartDuckingIfEnabled();
-      }
-    }
-  });
-}
-
-function updateDuckModeUI() {
-  if (duckMode === 'device') {
-    duckModeDeviceBtn.classList.add('active');
-    duckModeExeBtn.classList.remove('active');
-    deviceDuckSettings.classList.remove('hidden');
-    exeDuckSettings.classList.add('hidden');
-  } else {
-    duckModeDeviceBtn.classList.remove('active');
-    duckModeExeBtn.classList.add('active');
-    deviceDuckSettings.classList.add('hidden');
-    exeDuckSettings.classList.remove('hidden');
-  }
-}
-
-function renderExeList() {
-  exeList.innerHTML = '';
-  selectedDuckExes.forEach(exe => {
-    const item = document.createElement('div');
-    item.className = 'exe-item';
-    item.innerHTML = `
-      <span class="exe-item-name">${exe}</span>
-      <button class="exe-item-remove" title="Remove">×</button>
-    `;
-    item.querySelector('.exe-item-remove').addEventListener('click', () => {
-      selectedDuckExes = selectedDuckExes.filter(e => e !== exe);
-      renderExeList();
-      saveCurrentSettings();
-      restartDuckingIfEnabled();
-    });
-    exeList.appendChild(item);
   });
 }
 
@@ -397,11 +342,6 @@ function restartDuckingIfEnabled() {
       startDuckingCheck();
     }
   }
-}
-
-async function loadMusicFolderPath() {
-  const path = await window.electronAPI.getMusicFolderPath();
-  folderPathText.textContent = path;
 }
 
 
@@ -559,30 +499,14 @@ function setupEventListeners() {
     if (e.key === 'Escape') {
       if (!musicListPanel.classList.contains('hidden')) {
         musicListPanel.classList.add('hidden');
-      } else if (!settingsPanel.classList.contains('hidden')) {
-        settingsPanel.classList.add('hidden');
-        clickOverlay.classList.add('hidden');
       }
     }
   });
 
-  // Settings toggle
+  // Settings button - opens settings window
   settingsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const isHidden = settingsPanel.classList.toggle('hidden');
-    clickOverlay.classList.toggle('hidden', isHidden);
-  });
-
-  // Device select button - opens popup window
-  selectDevicesBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    window.electronAPI.openDevicesWindow();
-  });
-
-  // Click overlay closes settings panel
-  clickOverlay.addEventListener('click', () => {
-    settingsPanel.classList.add('hidden');
-    clickOverlay.classList.add('hidden');
+    window.electronAPI.openSettingsWindow();
   });
 
   // Listen for device updates from popup window
@@ -598,8 +522,16 @@ function setupEventListeners() {
     }
   });
 
-  // Prevent settings panel clicks from closing it
-  settingsPanel.addEventListener('click', (e) => e.stopPropagation());
+  // Listen for settings updates from settings window
+  window.electronAPI.onSettingsUpdated((settings) => {
+    if (settings.duckMode) {
+      duckMode = settings.duckMode;
+    }
+    if (settings.duckExes) {
+      selectedDuckExes = settings.duckExes;
+    }
+    restartDuckingIfEnabled();
+  });
 
   // Track section click to show music list
   trackSection.addEventListener('click', (e) => {
@@ -616,22 +548,6 @@ function setupEventListeners() {
     } else {
       currentCategoryPath.pop();
       renderListView(currentCategoryPath);
-    }
-  });
-
-  // Startup toggle
-  startOnBootCheckbox.addEventListener('change', async (e) => {
-    await window.electronAPI.setStartOnBoot(e.target.checked);
-  });
-
-  // Folder buttons
-  openFolderBtn.addEventListener('click', () => window.electronAPI.openMusicFolder());
-  selectFolderBtn.addEventListener('click', async () => {
-    const newPath = await window.electronAPI.selectMusicFolder();
-    if (newPath) {
-      folderPathText.textContent = newPath;
-      await loadMusicFromFolder();
-      if (musicFiles.length > 0) playRandomTrack();
     }
   });
 

@@ -1,83 +1,437 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
+const https = require('https');
+const os = require('os');
+
+const GITHUB_REPO = 'CalvFletch/AmbienceApp';
+const CURRENT_VERSION = require('./package.json').version;
 
 let mainWindow;
 let devicesWindow;
+let settingsWindow;
 let musicFolder = null;
 let configPath = null;
+let processListCache = { data: null, fetchedAt: 0, fetching: null };
+let exeIconCache = new Map();
+let folderIconCache = new Map();
+let servicesIconCache = null;
+let servicesIconPromise = null;
+let iconScriptPath = null;
+const ICON_CACHE_DIR = path.join(os.tmpdir(), 'ambience-icon-cache');
+const ICON_MANIFEST_PATH = path.join(ICON_CACHE_DIR, 'manifest.json');
+let iconManifest = null;
 
-function initPaths() {
-  // Default music folder: User's Music folder / Ambience
-  const defaultMusicFolder = path.join(app.getPath('music'), 'Ambience');
-  musicFolder = defaultMusicFolder;
+// Music library versioning
+let libraryMetadataCache = null;
+let libraryMetadataCacheTime = 0;
+const LIBRARY_METADATA_CACHE_TTL = 3600000; // 1 hour
+const LIBRARY_METADATA_FILENAME = 'library-metadata.json';
 
-  // Config stored in app user data folder (persists across updates)
-  configPath = path.join(app.getPath('userData'), 'config.json');
+function resetCaches() {
+  exeIconCache = new Map();
+  folderIconCache = new Map();
+  servicesIconCache = null;
+  servicesIconPromise = null;
+  processListCache = { data: null, fetchedAt: 0, fetching: null };
+  iconManifest = null; // keep disk cache; just drop in-memory copy
+}
 
-  // Load saved config
+function ensureIconCacheDir() {
   try {
-    if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      if (config.musicFolder && fs.existsSync(config.musicFolder)) {
-        musicFolder = config.musicFolder;
-      }
-    }
+    fs.mkdirSync(ICON_CACHE_DIR, { recursive: true });
   } catch (e) {
-    console.error('Error loading config:', e);
+    // best-effort
   }
+  return ICON_CACHE_DIR;
+}
 
-  // Ensure the music folder exists
-  if (!fs.existsSync(musicFolder)) {
-    fs.mkdirSync(musicFolder, { recursive: true });
+function loadIconManifest() {
+  if (iconManifest) return iconManifest;
+  ensureIconCacheDir();
+  try {
+    if (fs.existsSync(ICON_MANIFEST_PATH)) {
+      const raw = fs.readFileSync(ICON_MANIFEST_PATH, 'utf8');
+      iconManifest = JSON.parse(raw || '{}');
+      return iconManifest;
+    }
+  } catch (e) {}
+  iconManifest = {};
+  return iconManifest;
+}
+
+function writeIconManifest(manifest) {
+  try {
+    fs.writeFileSync(ICON_MANIFEST_PATH, JSON.stringify(manifest || {}, null, 2));
+  } catch (e) {
+    // best-effort
   }
 }
 
-function saveConfig(config = {}) {
+function getIconCachePaths(name) {
+  const safe = (name || '').toLowerCase().replace(/[^a-z0-9_.-]/g, '_');
+  const dir = ensureIconCacheDir();
+  return {
+    pngPath: path.join(dir, `${safe}.png`),
+    metaPath: path.join(dir, `${safe}.json`)
+  };
+}
+
+function readIconCache(name) {
+  if (!name) return null;
+  const manifest = loadIconManifest();
   try {
-    const currentConfig = loadConfigData();
-    const newConfig = { ...currentConfig, ...config, musicFolder };
-    fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2));
+    const { pngPath, metaPath } = getIconCachePaths(name);
+    const hasPng = fs.existsSync(pngPath);
+    let dataUrl = null;
+    if (hasPng) {
+      const b64 = fs.readFileSync(pngPath).toString('base64');
+      dataUrl = `data:image/png;base64,${b64}`;
+    }
+    let meta = {};
+    if (fs.existsSync(metaPath)) {
+      try {
+        meta = JSON.parse(fs.readFileSync(metaPath, 'utf8') || '{}');
+      } catch {}
+    }
+    if (!meta.path && manifest?.[name]?.path) {
+      meta.path = manifest[name].path;
+    }
+    if (!meta.source && manifest?.[name]?.source) {
+      meta.source = manifest[name].source;
+    }
+    if (!meta.reason && manifest?.[name]?.reason) {
+      meta.reason = manifest[name].reason;
+    }
+    if (!dataUrl && !meta.path && !meta.source && !meta.reason && !manifest?.[name]) {
+      return null; // nothing cached
+    }
+    return {
+      dataUrl: dataUrl || null,
+      path: meta.path || null,
+      source: meta.source || (hasPng ? 'disk-cache' : 'disk-cache-meta'),
+      reason: meta.reason || null
+    };
   } catch (e) {
-    console.error('Error saving config:', e);
+    return null;
   }
+}
+
+function writeIconCache(name, result) {
+  try {
+    const manifest = loadIconManifest();
+    const { pngPath, metaPath } = getIconCachePaths(name);
+    const hasIcon = !!result?.dataUrl;
+
+    if (hasIcon) {
+      const parts = result.dataUrl.split(',');
+      const base64 = parts.length > 1 ? parts[1] : parts[0];
+      if (base64) {
+        fs.writeFileSync(pngPath, base64, 'base64');
+      }
+    } else {
+      try {
+        if (fs.existsSync(pngPath)) fs.unlinkSync(pngPath);
+      } catch {}
+    }
+
+    const meta = {
+      path: result?.path || null,
+      source: result?.source || null,
+      reason: result?.reason || null
+    };
+    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    manifest[name] = { path: meta.path, source: meta.source, reason: meta.reason, hasIcon };
+    writeIconManifest(manifest);
+  } catch (e) {
+    // best-effort
+  }
+}
+
+function getAppPath(relPath) {
+  return path.join(__dirname, relPath);
+}
+
+function ensureConfigPath() {
+  if (!configPath) {
+    const userDataPath = app.getPath('userData');
+    configPath = path.join(userDataPath, 'config.json');
+  }
+  return configPath;
 }
 
 function loadConfigData() {
+  ensureConfigPath();
   try {
     if (fs.existsSync(configPath)) {
-      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      const raw = fs.readFileSync(configPath, 'utf8');
+      return JSON.parse(raw || '{}');
     }
   } catch (e) {
-    console.error('Error loading config data:', e);
+    console.error('Failed to read config:', e);
   }
   return {};
 }
 
-function getAppPath(filename) {
-  // In production, __dirname is inside asar, but loadFile and preload still work
-  // However, we need to use app.getAppPath() for consistency
-  if (app.isPackaged) {
-    return path.join(app.getAppPath(), filename);
+function saveConfig(update = {}) {
+  ensureConfigPath();
+  const current = loadConfigData();
+  const merged = { ...current, ...update };
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
+  } catch (e) {
+    console.error('Failed to write config:', e);
   }
-  return path.join(__dirname, filename);
+  return merged;
+}
+
+function initPaths() {
+  ensureConfigPath();
+  const userDataPath = app.getPath('userData');
+  const defaultMusicFolder = path.join(userDataPath, 'music');
+  const config = loadConfigData();
+  musicFolder = config.musicFolder || defaultMusicFolder;
+  if (!config.musicFolder) {
+    saveConfig({ musicFolder });
+  }
+}
+
+function ensureIconScript() {
+  if (iconScriptPath) return iconScriptPath;
+  const tmpDir = os.tmpdir();
+  iconScriptPath = path.join(tmpDir, 'ambience-get-icon.ps1');
+  const script = `
+param(
+  [Parameter(Mandatory = $true)][string]$ExeName
+)
+
+Add-Type -AssemblyName System.Drawing
+$exeFull = $ExeName.ToLower()
+if (-not $exeFull.EndsWith('.exe')) { $obj = [PSCustomObject]@{ path = $null; source = $null; data = $null; reason = 'not-exe' }; $obj | ConvertTo-Json -Compress; exit 0 }
+$exeBase = [System.IO.Path]::GetFileNameWithoutExtension($exeFull)
+
+$candidates = @()
+try {
+  $proc = Get-Process -Name $exeBase -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($proc) {
+    $p = $null
+    try { $p = $proc.Path } catch {}
+    if (-not $p) { try { $p = $proc.MainModule.FileName } catch {} }
+    if ($p) { $candidates += @{ Path = $p; Source = 'Get-Process' } }
+  }
+} catch {}
+
+try {
+  $cim = Get-CimInstance Win32_Process -Filter "Name='$exeFull'" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cim -and $cim.ExecutablePath) { $candidates += @{ Path = $cim.ExecutablePath; Source = 'CIM' } }
+} catch {}
+
+$sysPath = Join-Path $env:WINDIR "System32\\$exeFull"
+if (Test-Path $sysPath) { $candidates += @{ Path = $sysPath; Source = 'System32' } }
+
+# Other well-known locations (non-recursive)
+$wellKnownDirs = @(
+  (Join-Path $env:WINDIR 'System32'),
+  (Join-Path $env:WINDIR 'SysWOW64'),
+  (Join-Path $env:WINDIR 'System32\\wbem'),
+  (Join-Path $env:WINDIR 'System32\\drivers'),
+  (Join-Path $env:WINDIR 'System32\\oobe'),
+  'C:\\Program Files\\WSL'
+)
+foreach ($dir in $wellKnownDirs) {
+  $candidatePath = Join-Path $dir $exeFull
+  if (Test-Path $candidatePath) { $candidates += @{ Path = $candidatePath; Source = 'WellKnown' } }
+}
+
+# Windows Defender platform (versioned folder)
+try {
+  $defRoot = 'C:\\ProgramData\\Microsoft\\Windows Defender\\Platform'
+  if (Test-Path $defRoot) {
+    $latestDef = Get-ChildItem -Directory -Path $defRoot -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+    if ($latestDef) {
+      $defPath = Join-Path $latestDef.FullName $exeFull
+      if (Test-Path $defPath) { $candidates += @{ Path = $defPath; Source = 'Defender' } }
+    }
+  }
+} catch {}
+
+$seen = @{}
+$chosen = $null
+foreach ($c in $candidates) {
+  if (-not $c.Path) { continue }
+  $key = $c.Path.ToLower()
+  if ($seen[$key]) { continue }
+  $seen[$key] = $true
+  if (Test-Path $c.Path) { $chosen = $c; break }
+}
+
+$reason = $null; $data = $null; $path = $null; $source = $null
+if ($chosen) {
+  $path = $chosen.Path; $source = $chosen.Source
+  try {
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
+    if ($icon) {
+      $bitmap = $icon.ToBitmap()
+      $ms = New-Object System.IO.MemoryStream
+      $bitmap.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+      $bytes = $ms.ToArray()
+      $ms.Dispose(); $bitmap.Dispose(); $icon.Dispose()
+      $data = [Convert]::ToBase64String($bytes)
+    } else { $reason = 'extract-null-icon' }
+  } catch { $reason = 'extract-error' }
+} else {
+  $reason = 'no-path-found'
+}
+
+$obj = [PSCustomObject]@{ path = $path; source = $source; data = $data; reason = $reason }
+$obj | ConvertTo-Json -Compress
+`;
+
+  try {
+    fs.writeFileSync(iconScriptPath, script, 'utf8');
+  } catch (err) {
+    console.error('Failed to write icon script:', err);
+  }
+  return iconScriptPath;
+}
+
+function rememberFolderIcon(filePath, result) {
+  if (!filePath || !result?.dataUrl) return;
+  const dir = path.dirname(filePath).toLowerCase();
+  if (!folderIconCache.has(dir)) {
+    folderIconCache.set(dir, { dataUrl: result.dataUrl, path: filePath, source: result.source || 'folder-cache', reason: result.reason || null });
+  }
+}
+
+function getFolderIcon(filePath) {
+  if (!filePath) return null;
+  const dir = path.dirname(filePath).toLowerCase();
+  return folderIconCache.get(dir) || null;
+}
+
+function runIconScriptForExe(name) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const scriptPath = ensureIconScript();
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ExeName', name],
+      { timeout: 6000 },
+      (error, stdout, stderr) => {
+        const duration = Date.now() - start;
+        if (error || !stdout || !stdout.trim()) {
+          if (duration > 1000) {
+            console.warn(`get-exe-icon miss for ${name} in ${duration}ms${error ? ' err:' + error.message : ''}`);
+          }
+          const stderrText = (stderr || '').trim();
+          const reason = error?.killed ? 'timeout' : (error?.message || 'empty-output');
+          const result = { dataUrl: null, path: null, source: null, reason: stderrText ? `${reason}; ${stderrText}` : reason };
+          resolve(result);
+          return;
+        }
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          const data = parsed?.data;
+          const resolvedPath = parsed?.path;
+          const reason = parsed?.reason;
+          const source = parsed?.source;
+          if (data) {
+            const dataUrl = `data:image/png;base64,${data}`;
+            const result = { dataUrl, path: resolvedPath, source: source || 'n/a', reason: null };
+            resolve(result);
+            return;
+          }
+          const result = { dataUrl: null, path: resolvedPath || null, source: source || null, reason: reason || 'unknown' };
+          resolve(result);
+        } catch (e) {
+          const result = { dataUrl: null, path: null, source: null, reason: 'parse-error' };
+          resolve(result);
+        }
+      }
+    );
+  });
+}
+
+async function getServicesIconFallback() {
+  if (servicesIconCache) return servicesIconCache;
+  if (servicesIconPromise) return servicesIconPromise;
+  servicesIconPromise = runIconScriptForExe('services.exe').then((res) => {
+    servicesIconCache = res;
+    if (res?.dataUrl && res.path) {
+      rememberFolderIcon(res.path, res);
+    }
+    return servicesIconCache;
+  }).catch(() => {
+    servicesIconCache = { dataUrl: null, path: null, source: null, reason: 'services-fallback-error' };
+    return servicesIconCache;
+  });
+  return servicesIconPromise;
+}
+
+async function applyIconFallbacks(name, baseResult) {
+  const hasIcon = !!baseResult?.dataUrl;
+  const resolvedPath = baseResult?.path || null;
+
+  if (hasIcon) {
+    rememberFolderIcon(resolvedPath, baseResult);
+    exeIconCache.set(name, baseResult);
+    return baseResult;
+  }
+
+  // If we have no path at all (likely timeout/empty-output), skip sibling lookup and go straight to services fallback
+  if (!resolvedPath) {
+    const servicesIcon = await getServicesIconFallback();
+    if (servicesIcon?.dataUrl) {
+      const fallback = { dataUrl: servicesIcon.dataUrl, path: servicesIcon.path || null, source: 'services-fallback', reason: 'services-icon' };
+      exeIconCache.set(name, fallback);
+      return fallback;
+    }
+    const noIcon = { dataUrl: null, path: null, source: null, reason: baseResult?.reason || 'no-path' };
+    exeIconCache.set(name, noIcon);
+    return noIcon;
+  }
+
+  const sibling = getFolderIcon(resolvedPath);
+  if (sibling?.dataUrl) {
+    const fallback = { dataUrl: sibling.dataUrl, path: resolvedPath || sibling.path || null, source: sibling.source || 'sibling-fallback', reason: 'sibling-icon' };
+    exeIconCache.set(name, fallback);
+    return fallback;
+  }
+
+  const servicesIcon = await getServicesIconFallback();
+  if (servicesIcon?.dataUrl) {
+    const fallback = { dataUrl: servicesIcon.dataUrl, path: resolvedPath || servicesIcon.path || null, source: 'services-fallback', reason: 'services-icon' };
+    exeIconCache.set(name, fallback);
+    return fallback;
+  }
+
+  exeIconCache.set(name, baseResult);
+  return baseResult;
 }
 
 function createDevicesWindow() {
   if (devicesWindow) {
+    devicesWindow.show();
     devicesWindow.focus();
     return;
   }
 
-  const [x, y] = mainWindow.getPosition();
-  const [width, height] = mainWindow.getSize();
+  const width = 350;
+  const height = 400;
+  let x;
+  let y;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const bounds = mainWindow.getBounds();
+    x = Math.round(bounds.x + (bounds.width - width) / 2);
+    y = Math.round(bounds.y + (bounds.height - height) / 2);
+  }
 
   devicesWindow = new BrowserWindow({
-    width: 320,
-    height: 400,
-    x: x + width - 320 - 16,
-    y: y - 100,
+    width,
+    height,
+    x,
+    y,
     parent: mainWindow,
     modal: false,
     frame: false,
@@ -97,18 +451,77 @@ function createDevicesWindow() {
     devicesWindow = null;
   });
 
-  // Close when main window moves or loses focus
   devicesWindow.on('blur', () => {
     if (devicesWindow) {
       devicesWindow.close();
     }
+  });
+
+  if (mainWindow) {
+    mainWindow.on('moved', () => {
+      if (devicesWindow) devicesWindow.close();
+    });
+  }
+}
+
+function createSettingsWindow() {
+  if (settingsWindow) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const mainBounds = mainWindow.getBounds();
+  const display = screen.getDisplayNearestPoint({ x: mainBounds.x, y: mainBounds.y });
+
+  const settingsWidth = 500;
+  const settingsHeight = 450;
+  const centerX = Math.round(display.bounds.x + (display.bounds.width - settingsWidth) / 2);
+  const centerY = Math.round(display.bounds.y + (display.bounds.height - settingsHeight) / 2);
+
+  settingsWindow = new BrowserWindow({
+    width: settingsWidth,
+    height: settingsHeight,
+    x: centerX,
+    y: centerY,
+    parent: mainWindow,
+    modal: false,
+    frame: false,
+    transparent: true,
+    // Darken the acrylic backdrop further while keeping transparency
+    backgroundColor: '#66000000',
+    backgroundMaterial: process.platform === 'win32' ? 'acrylic' : undefined,
+    resizable: false,
+    skipTaskbar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: getAppPath('settings-preload.js')
+    }
+  });
+
+  if (settingsWindow.setBackgroundMaterial && process.platform === 'win32') {
+    settingsWindow.setBackgroundMaterial('acrylic');
+  }
+
+  settingsWindow.loadFile(getAppPath('settings.html'));
+
+  settingsWindow.on('close', (e) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      e.preventDefault();
+      settingsWindow.hide();
+    }
+  });
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
   });
 }
 
 function createWindow() {
   const config = loadConfigData();
 
-  // Default window bounds
   const defaultBounds = {
     width: 700,
     height: 300,
@@ -116,7 +529,6 @@ function createWindow() {
     y: undefined
   };
 
-  // Use saved bounds if available
   const bounds = config.windowBounds || defaultBounds;
 
   mainWindow = new BrowserWindow({
@@ -139,11 +551,10 @@ function createWindow() {
 
   mainWindow.loadFile(getAppPath('index.html'));
 
-  // Save window position/size on move or resize
   const saveBounds = () => {
     if (!mainWindow.isMinimized() && !mainWindow.isMaximized()) {
-      const bounds = mainWindow.getBounds();
-      saveConfig({ windowBounds: bounds });
+      const b = mainWindow.getBounds();
+      saveConfig({ windowBounds: b });
     }
   };
 
@@ -152,9 +563,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  resetCaches();
   initPaths();
+  prewarmProcessList();
 
-  // Apply startup setting
   const config = loadConfigData();
   if (config.startOnBoot !== undefined) {
     app.setLoginItemSettings({
@@ -163,7 +575,6 @@ app.whenReady().then(() => {
     });
   }
 
-  // Pre-compile audio check helper
   ensureAudioCheck();
 
   createWindow();
@@ -181,20 +592,121 @@ app.on('activate', () => {
   }
 });
 
-// IPC Handlers
+ipcMain.on('debug-log', (event, msg) => {
+  console.log('[settings]', msg);
+});
 ipcMain.on('open-devices-window', createDevicesWindow);
+ipcMain.on('open-settings-window', createSettingsWindow);
 
 ipcMain.on('close-devices-window', () => {
-    if(devicesWindow) {
-        devicesWindow.close();
+  if (devicesWindow) {
+    devicesWindow.close();
+  }
+});
+
+ipcMain.on('close-settings-window', () => {
+  if (settingsWindow) {
+    settingsWindow.hide();
+  }
+});
+
+ipcMain.handle('get-settings-state', async () => {
+  const config = loadConfigData();
+  return {
+    musicFolder: musicFolder,
+    duckMode: config.duckMode || 'device',
+    duckExes: config.duckExes || [],
+    duckDevices: config.duckDevices || [],
+    cachedDevices: config.cachedDevices || [],
+    cachedProcesses: config.cachedProcesses || []
+  };
+});
+
+ipcMain.handle('get-audio-devices', async () => {
+  const config = loadConfigData();
+  const cachedDevices = config.cachedDevices || [];
+
+  const ready = await ensureAudioCheck();
+  if (!ready) {
+    return { devices: cachedDevices, fromCache: true };
+  }
+
+  const { exePath } = getAudioCheckPaths();
+
+  const freshDevices = await new Promise((resolve) => {
+    exec(`"${exePath}" --list`, { timeout: 5000 }, (error, stdout) => {
+      if (error) {
+        console.error('Error getting audio devices:', error);
+        resolve([]);
+        return;
+      }
+      const devices = stdout.trim().split('\n').filter(d => d.trim()).map(d => d.trim());
+      resolve(devices);
+    });
+  });
+
+  if (freshDevices.length > 0) {
+    saveConfig({ cachedDevices: freshDevices });
+  }
+
+  return { devices: freshDevices, fromCache: false };
+});
+
+ipcMain.handle('browse-for-exe', async () => {
+  const result = await dialog.showOpenDialog(settingsWindow || mainWindow, {
+    properties: ['openFile'],
+    filters: [{ name: 'Executables', extensions: ['exe'] }],
+    title: 'Select Program'
+  });
+
+  if (!result.canceled && result.filePaths.length > 0) {
+    const fullPath = result.filePaths[0];
+    const exeName = path.basename(fullPath).toLowerCase();
+    return exeName;
+  }
+  return null;
+});
+
+ipcMain.handle('get-exe-icon', async (event, exeName) => {
+  const name = (exeName || '').toLowerCase();
+  if (!name.endsWith('.exe')) {
+    return { dataUrl: null, path: null, source: null, reason: 'not-exe' };
+  }
+
+  if (exeIconCache.has(name)) {
+    const cached = exeIconCache.get(name);
+    if (!cached?.dataUrl) {
+      const finalResult = await applyIconFallbacks(name, cached);
+      writeIconCache(name, finalResult);
+      return finalResult;
     }
+    writeIconCache(name, cached);
+    return cached;
+  }
+
+  const diskCached = readIconCache(name);
+  if (diskCached) {
+    exeIconCache.set(name, diskCached);
+    return diskCached;
+  }
+
+  const rawResult = await runIconScriptForExe(name);
+  const finalResult = await applyIconFallbacks(name, rawResult);
+  writeIconCache(name, finalResult);
+  return finalResult;
+});
+
+ipcMain.on('save-settings-from-window', (event, settings) => {
+  saveConfig(settings);
+  if (mainWindow) {
+    mainWindow.webContents.send('on-settings-updated', settings);
+  }
 });
 
 ipcMain.handle('get-initial-devices-state', async () => {
   const config = loadConfigData();
   const selectedDevices = config.duckDevices || [];
 
-  // Use the same C# helper we already compile - run with --list flag
   const ready = await ensureAudioCheck();
   if (!ready) {
     return { allDevices: [], selectedDevices };
@@ -218,7 +730,6 @@ ipcMain.handle('get-initial-devices-state', async () => {
 });
 
 ipcMain.on('update-duck-devices', (event, devices) => {
-  // Forward the update to the main window
   if (mainWindow) {
     mainWindow.webContents.send('on-duck-devices-updated', devices);
   }
@@ -770,10 +1281,10 @@ ipcMain.handle('check-exe-audio', async (event, exeNames) => {
   });
 });
 
-// Get list of all running processes
-ipcMain.handle('get-running-processes', async () => {
+// Get list of all running processes using tasklist (faster than PowerShell)
+function fetchProcessList() {
   return new Promise((resolve) => {
-    exec('wmic process get name /format:list', { timeout: 5000 }, (error, stdout) => {
+    exec('tasklist /FO CSV /NH', { timeout: 5000 }, (error, stdout) => {
       if (error) {
         console.error('Error getting processes:', error);
         resolve([]);
@@ -783,7 +1294,7 @@ ipcMain.handle('get-running-processes', async () => {
       const processes = [];
       const lines = stdout.split('\n');
       for (const line of lines) {
-        const match = line.match(/^Name=(.+\.exe)$/i);
+        const match = line.match(/^"([^"]+\.exe)"/i);
         if (match) {
           const name = match[1].toLowerCase();
           if (!seen.has(name)) {
@@ -796,4 +1307,458 @@ ipcMain.handle('get-running-processes', async () => {
       resolve(processes);
     });
   });
+}
+
+// Warm the process list cache at startup
+function prewarmProcessList() {
+  if (processListCache.fetching) return;
+  processListCache.fetching = fetchProcessList().then((processes) => {
+    processListCache.data = processes;
+    processListCache.fetchedAt = Date.now();
+    processListCache.fetching = null;
+    return processes;
+  }).catch(() => {
+    processListCache.fetching = null;
+    return [];
+  });
+}
+
+ipcMain.handle('get-running-processes', async () => {
+  // If we have cached data, return it immediately
+  if (processListCache.data && processListCache.data.length > 0) {
+    return processListCache.data;
+  }
+
+  // If a fetch is in-flight (from prewarm), wait for it
+  if (processListCache.fetching) {
+    const processes = await processListCache.fetching;
+    return processes || processListCache.data || [];
+  }
+
+  // No cache and no in-flight fetch - do a fresh fetch
+  const processes = await fetchProcessList();
+  processListCache.data = processes;
+  processListCache.fetchedAt = Date.now();
+  return processes;
 });
+
+// Check for updates from GitHub releases
+ipcMain.handle('check-for-updates', async () => {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/releases/latest`,
+      headers: { 'User-Agent': 'AmbienceApp' }
+    };
+
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const release = JSON.parse(data);
+          const latestVersion = release.tag_name?.replace(/^v/, '') || '';
+          const hasUpdate = compareVersions(latestVersion, CURRENT_VERSION) > 0;
+          resolve({
+            hasUpdate,
+            currentVersion: CURRENT_VERSION,
+            latestVersion,
+            releaseUrl: release.html_url || `https://github.com/${GITHUB_REPO}/releases`
+          });
+        } catch (e) {
+          resolve({ hasUpdate: false, error: 'Failed to parse response' });
+        }
+      });
+    }).on('error', (e) => {
+      resolve({ hasUpdate: false, error: e.message });
+    });
+  });
+});
+
+// Compare semantic versions: returns 1 if a > b, -1 if a < b, 0 if equal
+function compareVersions(a, b) {
+  const partsA = a.split('.').map(Number);
+  const partsB = b.split('.').map(Number);
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
+    const numA = partsA[i] || 0;
+    const numB = partsB[i] || 0;
+    if (numA > numB) return 1;
+    if (numA < numB) return -1;
+  }
+  return 0;
+}
+
+// Save dismissed update version
+ipcMain.handle('save-dismissed-update', async (event, version) => {
+  saveConfig({ dismissedUpdateVersion: version });
+});
+
+// Get dismissed update version
+ipcMain.handle('get-dismissed-update', async () => {
+  const config = loadConfigData();
+  return config.dismissedUpdateVersion || '';
+});
+
+// === Music Library Management ===
+
+function getLibraryMetadataPath() {
+  if (!musicFolder) return null;
+  return path.join(musicFolder, LIBRARY_METADATA_FILENAME);
+}
+
+function readLibraryMetadata() {
+  const metaPath = getLibraryMetadataPath();
+  if (!metaPath || !fs.existsSync(metaPath)) {
+    return null;
+  }
+  try {
+    const raw = fs.readFileSync(metaPath, 'utf8');
+    return JSON.parse(raw || '{}');
+  } catch (e) {
+    console.error('Failed to read library metadata:', e);
+    return null;
+  }
+}
+
+function writeLibraryMetadata(metadata) {
+  const metaPath = getLibraryMetadataPath();
+  if (!metaPath) return false;
+  try {
+    // Ensure music folder exists
+    if (!fs.existsSync(musicFolder)) {
+      fs.mkdirSync(musicFolder, { recursive: true });
+    }
+    fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+    return true;
+  } catch (e) {
+    console.error('Failed to write library metadata:', e);
+    return false;
+  }
+}
+
+// Fetch all music-lib-* releases from GitHub
+function fetchMusicLibraryReleases() {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/releases`,
+      headers: { 'User-Agent': 'AmbienceApp' }
+    };
+
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const releases = JSON.parse(data);
+          // Filter for music-lib-* releases and sort by creation date descending
+          const musicReleases = releases
+            .filter(r => r.tag_name && r.tag_name.startsWith('music-lib-'))
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          resolve(musicReleases);
+        } catch (e) {
+          console.error('Failed to parse releases:', e);
+          resolve([]);
+        }
+      });
+    }).on('error', (e) => {
+      console.error('Failed to fetch releases:', e);
+      resolve([]);
+    });
+  });
+}
+
+// Parse metadata from a release's music-lib-metadata.json asset
+function extractMetadataFromRelease(release) {
+  const metadataAsset = release.assets?.find(a => a.name === 'music-lib-metadata.json');
+  if (!metadataAsset) return null;
+
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/releases/assets/${metadataAsset.id}`,
+      headers: { 
+        'User-Agent': 'AmbienceApp',
+        'Accept': 'application/octet-stream'
+      }
+    };
+
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const metadata = JSON.parse(data);
+          metadata.releaseTag = release.tag_name;
+          metadata.releaseUrl = release.html_url;
+          resolve(metadata);
+        } catch (e) {
+          console.error('Failed to parse release metadata:', e);
+          resolve(null);
+        }
+      });
+    }).on('error', (e) => {
+      console.error('Failed to fetch release metadata:', e);
+      resolve(null);
+    });
+  });
+}
+
+// Build available categories from all releases
+async function buildAvailableCategoriesMap() {
+  const releases = await fetchMusicLibraryReleases();
+  if (releases.length === 0) return {};
+
+  const categoryMap = {};
+  // Process releases in reverse order (oldest first) so newer ones override
+  for (const release of releases.reverse()) {
+    const metadata = await extractMetadataFromRelease(release);
+    if (metadata && metadata.categories) {
+      for (const category of metadata.categories) {
+        categoryMap[category.name] = {
+          name: category.name,
+          description: category.description || '',
+          libraryVersion: metadata.libraryVersion,
+          releaseTag: metadata.releaseTag,
+          releaseUrl: metadata.releaseUrl,
+          archiveNames: category.archiveNames || []
+        };
+      }
+    }
+  }
+
+  return categoryMap;
+}
+
+// Get music library status
+ipcMain.handle('get-music-library-status', async () => {
+  const localMetadata = readLibraryMetadata();
+  const availableCategories = await buildAvailableCategoriesMap();
+
+  const status = {
+    musicFolderPath: musicFolder,
+    localMetadata: localMetadata || null,
+    availableCategories: availableCategories,
+    status: 'not-installed',
+    aggregatedVersion: null,
+    newOrUpdatedCategories: []
+  };
+
+  if (!localMetadata) {
+    status.status = 'not-installed';
+    return status;
+  }
+
+  // Check if any categories have updates or are missing
+  const installedCats = localMetadata.installedCategories || {};
+  const hasUpdates = Object.entries(installedCats).some(([catName, catData]) => {
+    const available = availableCategories[catName];
+    return available && available.libraryVersion !== catData.libraryVersion;
+  });
+
+  const missingNew = Object.keys(availableCategories).filter(catName => {
+    const installed = installedCats[catName];
+    return !installed || !installed.installed;
+  });
+
+  if (hasUpdates || missingNew.length > 0) {
+    status.status = 'out-of-date';
+    status.newOrUpdatedCategories = missingNew;
+  } else {
+    status.status = 'up-to-date';
+  }
+
+  // Calculate aggregated version (highest version of installed categories)
+  let maxVersion = '0.0';
+  Object.values(installedCats).forEach(catData => {
+    if (catData.installed && catData.libraryVersion) {
+      if (compareVersions(catData.libraryVersion, maxVersion) > 0) {
+        maxVersion = catData.libraryVersion;
+      }
+    }
+  });
+
+  status.aggregatedVersion = maxVersion !== '0.0' ? maxVersion : null;
+  return status;
+});
+
+// Download and extract library categories
+ipcMain.handle('download-library-categories', async (event, options) => {
+  const { categories, targetFolder } = options;
+
+  if (!categories || !Array.isArray(categories) || categories.length === 0) {
+    return { success: false, error: 'No categories specified' };
+  }
+
+  if (!targetFolder) {
+    return { success: false, error: 'No target folder specified' };
+  }
+
+  try {
+    // Ensure target folder exists
+    if (!fs.existsSync(targetFolder)) {
+      fs.mkdirSync(targetFolder, { recursive: true });
+    }
+
+    // Fetch available categories
+    const availableCategories = await buildAvailableCategoriesMap();
+
+    // Read current metadata
+    const currentMetadata = readLibraryMetadata() || {
+      musicFolderPath: targetFolder,
+      lastUpdated: new Date().toISOString(),
+      installedCategories: {}
+    };
+
+    // Download and extract each category
+    for (const categoryName of categories) {
+      const categoryInfo = availableCategories[categoryName];
+      if (!categoryInfo) {
+        console.warn(`Category ${categoryName} not found in available releases`);
+        continue;
+      }
+
+      event.sender.send('music-download-progress', {
+        category: categoryName,
+        status: 'downloading',
+        percent: 0
+      });
+
+      // Download all archive parts for this category
+      const archiveNames = categoryInfo.archiveNames || [];
+      if (archiveNames.length === 0) {
+        console.warn(`No archive names for category ${categoryName}`);
+        continue;
+      }
+
+      // Download and combine archives
+      const extractPath = path.join(targetFolder, categoryName);
+      if (!fs.existsSync(extractPath)) {
+        fs.mkdirSync(extractPath, { recursive: true });
+      }
+
+      // Download each part
+      for (let i = 0; i < archiveNames.length; i++) {
+        const archiveName = archiveNames[i];
+        const tempPath = path.join(os.tmpdir(), `ambience-${categoryName}-${i}.zip`);
+
+        const downloadSuccess = await downloadGitHubAsset(
+          categoryInfo.releaseTag,
+          archiveName,
+          tempPath,
+          (percent) => {
+            event.sender.send('music-download-progress', {
+              category: categoryName,
+              status: 'downloading',
+              percent: Math.floor(percent)
+            });
+          }
+        );
+
+        if (!downloadSuccess) {
+          return { success: false, error: `Failed to download ${archiveName}` };
+        }
+
+        // Extract archive
+        event.sender.send('music-download-progress', {
+          category: categoryName,
+          status: 'extracting',
+          percent: 0
+        });
+
+        const extractSuccess = await extractZip(tempPath, extractPath);
+        if (!extractSuccess) {
+          return { success: false, error: `Failed to extract ${archiveName}` };
+        }
+
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tempPath);
+        } catch (e) {}
+      }
+
+      // Update metadata for this category
+      currentMetadata.installedCategories[categoryName] = {
+        libraryVersion: categoryInfo.libraryVersion,
+        releaseTag: categoryInfo.releaseTag,
+        installed: true,
+        optedOut: false
+      };
+
+      event.sender.send('music-download-progress', {
+        category: categoryName,
+        status: 'complete',
+        percent: 100
+      });
+    }
+
+    // Write updated metadata
+    currentMetadata.lastUpdated = new Date().toISOString();
+    currentMetadata.musicFolderPath = targetFolder;
+    writeLibraryMetadata(currentMetadata);
+
+    return { success: true, metadata: currentMetadata };
+  } catch (e) {
+    console.error('Download failed:', e);
+    return { success: false, error: e.message };
+  }
+});
+
+// Helper: download GitHub release asset
+function downloadGitHubAsset(releaseTag, assetName, outputPath, progressCallback) {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'api.github.com',
+      path: `/repos/${GITHUB_REPO}/releases/download/${releaseTag}/${assetName}`,
+      headers: { 'User-Agent': 'AmbienceApp' }
+    };
+
+    const file = fs.createWriteStream(outputPath);
+    https.get(options, (res) => {
+      const totalSize = parseInt(res.headers['content-length'], 10);
+      let downloadedSize = 0;
+
+      res.on('data', (chunk) => {
+        downloadedSize += chunk.length;
+        if (progressCallback && totalSize) {
+          progressCallback((downloadedSize / totalSize) * 100);
+        }
+      });
+
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve(true);
+      });
+      file.on('error', () => {
+        fs.unlink(outputPath, () => {});
+        resolve(false);
+      });
+    }).on('error', () => {
+      fs.unlink(outputPath, () => {});
+      resolve(false);
+    });
+  });
+}
+
+// Helper: extract zip file (using system utilities)
+function extractZip(zipPath, outputPath) {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(zipPath)) {
+      resolve(false);
+      return;
+    }
+
+    // Use PowerShell on Windows
+    const command = `[System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath}', '${outputPath}', $true)`;
+    exec(`powershell -NoProfile -Command "${command}"`, { timeout: 30000 }, (error) => {
+      if (error) {
+        console.error('Extract failed:', error);
+        resolve(false);
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+

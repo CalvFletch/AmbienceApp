@@ -1,0 +1,21 @@
+{
+  "libraryVersion": "1.0",
+  "releaseDate": "2025-01-05",
+  "categories": [
+    {
+      "name": "Skyrim",
+      "description": "Ambient music from The Elder Scrolls V: Skyrim",
+      "archiveNames": ["skyrim.part00.zip", "skyrim.part01.zip"]
+    },
+    {
+      "name": "Oblivion",
+      "description": "Ambient music from The Elder Scrolls IV: Oblivion",
+      "archiveNames": ["oblivion.part00.zip", "oblivion.part01.zip"]
+    },
+    {
+      "name": "LOTR",
+      "description": "Ambient music from The Lord of the Rings",
+      "archiveNames": ["lotr.part00.zip"]
+    }
+  ]
+}
