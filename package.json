@@ -1,6 +1,6 @@
 {
   "name": "ambience-app",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Ambient music player with auto-ducking",
   "main": "main.js",
   "scripts": {
@@ -45,8 +45,5 @@
       "!dist/**"
     ],
     "extraResources": []
-  },
-  "dependencies": {
-    "adm-zip": "^0.5.16"
   }
 }

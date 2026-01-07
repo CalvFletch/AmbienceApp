@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMusicLibraryStatus: () => ipcRenderer.invoke('get-music-library-status'),
   onProcessListUpdated: (callback) => ipcRenderer.on('process-list-updated', (event, ...args) => callback(...args)),
   onMusicFilesUpdated: (callback) => ipcRenderer.on('music-files-updated', (event, ...args) => callback(...args)),
+  onReleaseCategoryFiles: (callback) => ipcRenderer.on('release-category-files', (event, ...args) => callback(...args)),
   // Debug events from debug window
   onDebugShowUpdate: (callback) => ipcRenderer.on('debug-show-update', (event, ...args) => callback(...args)),
   onDebugShowLibrary: (callback) => ipcRenderer.on('debug-show-library', (event, ...args) => callback(...args)),

@@ -100,6 +100,7 @@ const SILENCE_CHECKS_REQUIRED = 8; // Require 8 consecutive silence checks (~3.2
 
 let activePlayer = audioPlayer;
 let currentShufflePath = []; // Locked category path for shuffle mode
+let shuffleMode = false; // false = sequential play, true = random play
 const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.mkv'];
 
 function animateTextSwitch(element, newText) {
@@ -172,6 +173,8 @@ async function init() {
   await loadSettings();
   await loadMusicFromFolder();
   if (musicFiles.length > 0) {
+    // Start with shuffle mode since no specific track was chosen
+    shuffleMode = true;
     playRandomTrack();
   }
   if (duckingEnabled) {
@@ -180,6 +183,34 @@ async function init() {
       startDuckingCheck();
     }
   }
+  
+  // Global function for main process to call directly via executeJavaScript
+  window.refreshMusicFiles = async function() {
+    const wasPlaying = !activePlayer.paused;
+    const previousTrackPath = currentTrack?.path || null;
+    
+    await loadMusicFromFolder();
+    
+    // Re-render the music list if it's currently open
+    if (!musicListPanel.classList.contains('hidden')) {
+      renderListView(currentCategoryPath);
+    }
+    
+    // Try to find the same track in the new file list
+    if (previousTrackPath) {
+      const sameTrackIndex = musicFiles.findIndex(f => f.path === previousTrackPath);
+      if (sameTrackIndex >= 0) {
+        currentIndex = sameTrackIndex;
+        return;
+      }
+    }
+    
+    // Track was removed - play new random track if was playing
+    if ((wasPlaying || !isManuallyPaused) && musicFiles.length > 0) {
+      playRandomTrack();
+    }
+  };
+  
   // Check for updates and music library after a short delay
   // Notifications will queue up and show one after another
   setTimeout(async () => {
@@ -648,8 +679,10 @@ function renderListView(pathParts = []) {
             item.className = 'music-list-item' + (index === currentIndex ? ' active' : '');
             item.innerHTML = `<div class="item-name">${track.name}</div>`;
             item.addEventListener('click', () => {
-                // Clear shuffle lock when manually selecting a track
-                currentShufflePath = [];
+                // Set to sequential play from this track onwards
+                shuffleMode = false;
+                // Lock to top-level category only (first element of path)
+                currentShufflePath = currentCategoryPath.length > 0 ? [currentCategoryPath[0]] : [];
                 playTrack(index);
                 musicListPanel.classList.add('hidden');
             });
@@ -659,7 +692,8 @@ function renderListView(pathParts = []) {
 }
 
 function playRandomFromPath(pathParts = []) {
-    // Lock to this category for future skips
+    // Lock to this category and enable shuffle mode
+    shuffleMode = true;
     currentShufflePath = [...pathParts];
     const node = getNodeFromPath(pathParts);
     const tracksToShuffle = getAllTracksFromNode(node);
@@ -729,20 +763,51 @@ function setupEventListeners() {
     restartDuckingIfEnabled();
   });
 
+  // Listen for release-category-files (before category removal)
+  window.electronAPI.onReleaseCategoryFiles((categoryName) => {
+    // If currently playing a track from this category (or subcategory), stop and release
+    if (currentTrack && currentTrack.category && 
+        (currentTrack.category === categoryName || currentTrack.category.startsWith(categoryName + ' / '))) {
+      audioPlayer.pause();
+      audioPlayer.src = '';
+      bgVideo.pause();
+      bgVideo.src = '';
+      currentTrack = null;
+    }
+  });
+
   // Listen for music files updates (after library download/remove)
   window.electronAPI.onMusicFilesUpdated(async () => {
-    console.log('Music files updated, reloading...');
     const wasPlaying = !activePlayer.paused;
+    const previousTrackPath = currentTrack?.path || null;
+    
     await loadMusicFromFolder();
-    // If music was playing or not manually paused, start playing from new library
+    
+    // Re-render the music list if it's currently open
+    if (!musicListPanel.classList.contains('hidden')) {
+      renderListView(currentCategoryPath);
+    }
+    
+    // Try to find the same track in the new file list
+    if (previousTrackPath) {
+      const sameTrackIndex = musicFiles.findIndex(f => f.path === previousTrackPath);
+      if (sameTrackIndex >= 0) {
+        currentIndex = sameTrackIndex;
+        return;
+      }
+    }
+    
+    // Track was removed or didn't exist - play new random track if was playing
     if ((wasPlaying || !isManuallyPaused) && musicFiles.length > 0) {
       playRandomTrack();
     }
   });
 
   // Track section click to show music list
-  trackSection.addEventListener('click', (e) => {
+  trackSection.addEventListener('click', async (e) => {
     e.stopPropagation();
+    // Refresh music files to ensure we have the latest
+    await loadMusicFromFolder();
     renderMusicList();
     musicListPanel.classList.remove('hidden');
   });
@@ -868,7 +933,6 @@ function togglePlayPause() {
 // Load music files from local music folder
 async function loadMusicFromFolder() {
   musicFiles = await window.electronAPI.getMusicFiles();
-  console.log('Loaded music files:', musicFiles.length);
   buildCategoryTree();
 
   if (musicFiles.length === 0) {
@@ -929,46 +993,50 @@ function playTrack(index) {
   isManuallyPaused = false;
 }
 
-// Play a random track (respects locked category if set)
-function playRandomTrack() {
-  // If we have a locked category, use it
+// Play next track (sequential or random based on shuffleMode)
+async function playNextTrack() {
+  // Refresh music files to catch any changes
+  await loadMusicFromFolder();
+  
+  // Determine which tracks to use
+  let tracksToUse = musicFiles;
   if (currentShufflePath.length > 0) {
     const node = getNodeFromPath(currentShufflePath);
-    const tracksInCategory = getAllTracksFromNode(node);
-    if (tracksInCategory.length > 0) {
-      let randomTrack;
-      if (tracksInCategory.length === 1) {
-        randomTrack = tracksInCategory[0];
-      } else {
-        // Pick a different track than current
-        const currentTrack = musicFiles[currentIndex];
-        do {
-          randomTrack = tracksInCategory[Math.floor(Math.random() * tracksInCategory.length)];
-        } while (randomTrack === currentTrack && tracksInCategory.length > 1);
-      }
-      const index = musicFiles.indexOf(randomTrack);
-      playTrack(index);
-      return;
-    }
+    tracksToUse = getAllTracksFromNode(node);
   }
-
-  // Fallback to all tracks
-  if (musicFiles.length === 0) {
+  
+  if (tracksToUse.length === 0) {
     trackName.textContent = 'No tracks found';
     return;
   }
-
-  // Get a random index different from current if possible
-  let newIndex;
-  if (musicFiles.length === 1) {
-    newIndex = 0;
+  
+  if (shuffleMode) {
+    // Random mode - pick a different track
+    let nextTrack;
+    if (tracksToUse.length === 1) {
+      nextTrack = tracksToUse[0];
+    } else {
+      const currentTrackObj = musicFiles[currentIndex];
+      do {
+        nextTrack = tracksToUse[Math.floor(Math.random() * tracksToUse.length)];
+      } while (nextTrack === currentTrackObj && tracksToUse.length > 1);
+    }
+    const index = musicFiles.indexOf(nextTrack);
+    playTrack(index);
   } else {
-    do {
-      newIndex = Math.floor(Math.random() * musicFiles.length);
-    } while (newIndex === currentIndex);
+    // Sequential mode - play next track in the list
+    const currentTrackObj = musicFiles[currentIndex];
+    const currentPosInCategory = tracksToUse.indexOf(currentTrackObj);
+    const nextPosInCategory = (currentPosInCategory + 1) % tracksToUse.length;
+    const nextTrack = tracksToUse[nextPosInCategory];
+    const index = musicFiles.indexOf(nextTrack);
+    playTrack(index);
   }
+}
 
-  playTrack(newIndex);
+// Legacy function name for compatibility
+async function playRandomTrack() {
+  await playNextTrack();
 }
 
 // Update progress bar
@@ -1002,8 +1070,10 @@ function fadeVolume(target, duration, callback) {
 
   const startVolume = activePlayer.volume;
   const volumeDiff = target - startVolume;
-  const steps = 30;
-  const stepTime = duration / steps;
+  
+  // Use fixed 16ms steps (~60fps) for smooth transitions
+  const stepTime = 16;
+  const steps = Math.max(1, Math.round(duration / stepTime));
   let currentStep = 0;
 
   fadeInterval = setInterval(() => {

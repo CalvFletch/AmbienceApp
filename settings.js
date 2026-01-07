@@ -101,6 +101,7 @@ async function init() {
   selectedDuckDevices = state.duckDevices || [];
   selectedDuckExes = state.duckExes || [];
   cachedDevices = state.cachedDevices || [];
+  skipDeleteWarning = state.skipDeleteWarning || false;
 
   updateDuckModeUI();
   updateCounts();
@@ -676,21 +677,25 @@ async function loadMusicLibraryStatus() {
 function updateMusicLibraryUI() {
   if (!musicLibraryStatus) return;
 
-  // Update button text based on status - simplified
+  // Update button text based on status
   let statusText = 'Library';
-  if (musicLibraryStatus.status === 'out-of-date') {
-    statusText = 'Library (Updates Available)';
+  
+  // Count total new tracks available across all installed categories
+  const libraryChanges = musicLibraryStatus.libraryChanges?.categories || {};
+  let totalNewTracks = 0;
+  
+  for (const [catName, catInfo] of Object.entries(libraryChanges)) {
+    if (catInfo.installed && catInfo.changes?.tracksToAdd > 0) {
+      totalNewTracks += catInfo.changes.tracksToAdd;
+    }
   }
+  
+  if (totalNewTracks > 0) {
+    statusText = `Library (+${totalNewTracks} new)`;
+  }
+  // Removed "Library (New Available)" - user chose not to install those libs
 
   musicBtnText.textContent = statusText;
-
-  // Show aggregated version if installed
-  if (musicLibraryStatus.aggregatedVersion) {
-    const versionBadge = document.createElement('span');
-    versionBadge.style.fontSize = '9px';
-    versionBadge.style.color = 'var(--text-dim)';
-    versionBadge.textContent = ` v${musicLibraryStatus.aggregatedVersion}`;
-  }
 }
 
 // Render the full-page library view
@@ -700,17 +705,23 @@ function renderLibraryPage() {
   libraryList.innerHTML = '';
   selectedMusicCategories = [];
 
-  const categories = musicLibraryStatus.availableCategories || {};
+  // Use new libraryChanges format, fallback to old format
+  const libraryChanges = musicLibraryStatus.libraryChanges?.categories || {};
   const installed = musicLibraryStatus.localMetadata?.installedCategories || {};
 
-  // Helper to format version
-  const formatVersion = (ver) => {
-    if (!ver) return '';
-    const parts = ver.split('.');
-    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : ver;
+  // Helper to format size with sign
+  const formatSizeDelta = (bytes) => {
+    if (!bytes || bytes === 0) return '';
+    const sign = bytes > 0 ? '+' : '';
+    const absBytes = Math.abs(bytes);
+    if (absBytes >= 1024 * 1024 * 1024) {
+      return `${sign}${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+    } else {
+      return `${sign}${Math.round(bytes / (1024 * 1024))}MB`;
+    }
   };
 
-  // Helper to format size
+  // Helper to format size (no sign)
   const formatSize = (bytes) => {
     if (!bytes) return '';
     if (bytes >= 1024 * 1024 * 1024) {
@@ -720,19 +731,34 @@ function renderLibraryPage() {
     }
   };
 
-  if (Object.keys(categories).length === 0) {
+  // Build change summary text like "+2 tracks -1 track (+50MB)"
+  const formatChangeSummary = (changes) => {
+    if (!changes) return '';
+    const parts = [];
+    if (changes.tracksToAdd > 0) {
+      parts.push(`+${changes.tracksToAdd} track${changes.tracksToAdd !== 1 ? 's' : ''}`);
+    }
+    if (changes.tracksToRemove > 0) {
+      parts.push(`-${changes.tracksToRemove} track${changes.tracksToRemove !== 1 ? 's' : ''}`);
+    }
+    if (changes.sizeDelta && changes.sizeDelta !== 0) {
+      parts.push(`(${formatSizeDelta(changes.sizeDelta)})`);
+    }
+    return parts.join(' ');
+  };
+
+  if (Object.keys(libraryChanges).length === 0) {
     libraryList.innerHTML = '<div class="empty-message">No categories available</div>';
     updateLibraryDownloadButton();
     return;
   }
 
-  // Check if there are any selectable items
+  // Check if there are any selectable items (need download)
   let hasSelectableItems = false;
-  Object.entries(categories).forEach(([catName, catInfo]) => {
-    const installedInfo = installed[catName];
-    const isInstalled = installedInfo?.installed;
-    const hasUpdate = isInstalled && installedInfo?.version !== catInfo.version;
-    if (!isInstalled || hasUpdate) {
+  Object.entries(libraryChanges).forEach(([catName, catInfo]) => {
+    const isInstalled = catInfo.installed;
+    const hasNewTracks = catInfo.changes?.tracksToAdd > 0;
+    if (!isInstalled || hasNewTracks) {
       hasSelectableItems = true;
     }
   });
@@ -752,13 +778,11 @@ function renderLibraryPage() {
     } else if (selectedItems.length === allItems.length) {
       selectAllElement.classList.add('selected');
     } else {
-      // Some but not all selected - uncheck Select All
       selectAllElement.classList.remove('selected');
     }
   };
 
   if (librarySelectAll) {
-    // Remove any previous event listener by cloning
     const newSelectAll = librarySelectAll.cloneNode(true);
     librarySelectAll.parentNode.replaceChild(newSelectAll, librarySelectAll);
     selectAllElement = newSelectAll;
@@ -767,7 +791,6 @@ function renderLibraryPage() {
       newSelectAll.classList.remove('disabled');
       newSelectAll.addEventListener('click', () => {
         const isSelected = newSelectAll.classList.toggle('selected');
-        // Toggle all selectable items
         const allItems = libraryList.querySelectorAll('.library-item:not(.disabled)');
         allItems.forEach(item => {
           const catName = item.dataset.category;
@@ -789,26 +812,25 @@ function renderLibraryPage() {
     }
   }
 
-  // GitHub raw URL base for category icons (from MusicLibrary repo)
-  const iconBaseUrl = 'https://raw.githubusercontent.com/CalvFletch/AmbienceApp-MusicLibrary/main/icons/';
+  // R2 URL base (icons are at {category}/icon.png)
+  const r2BaseUrl = 'https://pub-8d3c3b52c11c464ba2e463fc91bbb7e7.r2.dev';
 
-  Object.entries(categories).forEach(([catName, catInfo]) => {
-    const installedInfo = installed[catName];
-    const isInstalled = installedInfo?.installed;
-    const installedVersion = installedInfo?.version;
-    const availableVersion = catInfo.version;
-    const hasUpdate = isInstalled && installedVersion !== availableVersion;
+  Object.entries(libraryChanges).forEach(([catName, catInfo]) => {
+    const isInstalled = catInfo.installed;
+    const hasNewTracks = catInfo.changes?.tracksToAdd > 0;
+    const hasRemovals = catInfo.changes?.tracksToRemove > 0;
 
     const item = document.createElement('div');
     item.className = 'library-item';
     item.dataset.category = catName;
 
-    // If installed and up to date, mark as disabled
-    if (isInstalled && !hasUpdate) {
+    // If installed and no new tracks to download, mark as disabled (up to date)
+    // Note: removals are handled silently, so only new tracks make it selectable
+    if (isInstalled && !hasNewTracks) {
       item.classList.add('disabled');
       item.classList.add('selected');
-    } else if (hasUpdate) {
-      // Auto-select items with updates
+    } else if (hasNewTracks && !catInfo.optedOut) {
+      // Auto-select items with new tracks (unless user opted out / removed)
       item.classList.add('selected');
       selectedMusicCategories.push(catName);
     }
@@ -818,17 +840,18 @@ function renderLibraryPage() {
     checkboxIcon.className = 'checkbox-icon';
     checkboxIcon.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
 
-    // Category icon from GitHub
+    // Category icon from R2
     const categoryIcon = document.createElement('img');
     categoryIcon.className = 'library-item-icon';
-    categoryIcon.src = `${iconBaseUrl}${catName.toLowerCase().replace(/\s+/g, '-')}.png`;
+    const iconUrl = catInfo.icon || `${r2BaseUrl}/${catInfo.slug}/icon.png`;
+    categoryIcon.src = iconUrl;
     categoryIcon.alt = catName;
     categoryIcon.onerror = () => {
-      // Fallback: hide if icon doesn't exist
+      console.warn('Icon failed to load:', iconUrl);
       categoryIcon.style.display = 'none';
     };
 
-    // Info section: "Skyrim" (light) "- 4 Tracks - 1.5gb" (dark)
+    // Info section
     const infoSection = document.createElement('div');
     infoSection.className = 'library-item-info';
 
@@ -836,31 +859,38 @@ function renderLibraryPage() {
     nameSpan.className = 'library-item-name';
     nameSpan.textContent = catName;
 
-    const metaSpan = document.createElement('span');
-    metaSpan.className = 'library-item-meta';
-    const sizeStr = catInfo.totalSize ? formatSize(catInfo.totalSize) : '';
-    const trackCount = catInfo.songCount || 0;
-    metaSpan.textContent = `- ${trackCount} Tracks${sizeStr ? ' - ' + sizeStr : ''}`;
+    // Add "Up to date" badge after name if installed with no changes
+    if (isInstalled && !hasNewTracks && !hasRemovals) {
+      const upToDateBadge = document.createElement('span');
+      upToDateBadge.className = 'up-to-date-badge';
+      upToDateBadge.textContent = 'Up to date';
+      upToDateBadge.style.cssText = 'font-size: 9px; color: var(--text-dim); margin-left: 8px; font-weight: normal; letter-spacing: 0.5px;';
+      nameSpan.appendChild(upToDateBadge);
+    }
 
     infoSection.appendChild(nameSpan);
-    infoSection.appendChild(metaSpan);
 
-    // Version
-    const versionSpan = document.createElement('span');
-    versionSpan.className = 'library-item-version';
-    if (hasUpdate) {
-      versionSpan.classList.add('update-available');
-      versionSpan.textContent = `v${formatVersion(availableVersion)} (v${formatVersion(installedVersion)})`;
-    } else if (isInstalled) {
-      versionSpan.textContent = `v${formatVersion(installedVersion)}`;
+    // Track/size info (always shown)
+    const changeSpan = document.createElement('span');
+    changeSpan.className = 'library-item-version';
+    
+    if (!isInstalled) {
+      // Not installed - show total size to download
+      changeSpan.textContent = `${catInfo.trackCount} tracks (${formatSize(catInfo.totalSize)})`;
+    } else if (hasNewTracks || hasRemovals) {
+      // Has changes - show summary
+      changeSpan.classList.add('update-available');
+      changeSpan.textContent = formatChangeSummary(catInfo.changes);
     } else {
-      versionSpan.textContent = `v${formatVersion(availableVersion)}`;
+      // Up to date - still show track count and size
+      changeSpan.textContent = `${catInfo.trackCount} tracks (${formatSize(catInfo.totalSize)})`;
+      changeSpan.style.color = 'var(--text-dim)';
     }
 
     item.appendChild(checkboxIcon);
     item.appendChild(categoryIcon);
     item.appendChild(infoSection);
-    item.appendChild(versionSpan);
+    item.appendChild(changeSpan);
 
     // Remove button for installed categories
     if (isInstalled) {
@@ -875,8 +905,8 @@ function renderLibraryPage() {
       item.appendChild(removeBtn);
     }
 
-    // Click handler for selection (only if not disabled)
-    if (!isInstalled || hasUpdate) {
+    // Click handler for selection (only if not disabled - needs download)
+    if (!isInstalled || hasNewTracks) {
       item.addEventListener('click', () => {
         const isSelected = item.classList.toggle('selected');
         if (isSelected) {
@@ -914,15 +944,7 @@ function showMusicLibraryModal() {
   if (categoriesCheckboxes) categoriesCheckboxes.innerHTML = '';
   selectedMusicCategories = [];
 
-  const categories = musicLibraryStatus.availableCategories || {};
-  const installed = musicLibraryStatus.localMetadata?.installedCategories || {};
-
-  // Helper to format version (X.Y instead of X.Y.Z)
-  const formatVersion = (ver) => {
-    if (!ver) return '';
-    const parts = ver.split('.');
-    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : ver;
-  };
+  const categories = musicLibraryStatus.libraryChanges?.categories || {};
 
   // Helper to format size
   const formatSize = (bytes) => {
@@ -934,13 +956,40 @@ function showMusicLibraryModal() {
     }
   };
 
-  // Check if all categories are up to date
+  // Helper to format size with sign
+  const formatSizeDelta = (bytes) => {
+    if (!bytes || bytes === 0) return '';
+    const sign = bytes > 0 ? '+' : '';
+    const absBytes = Math.abs(bytes);
+    if (absBytes >= 1024 * 1024 * 1024) {
+      return `${sign}${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+    } else {
+      return `${sign}${Math.round(bytes / (1024 * 1024))}MB`;
+    }
+  };
+
+  // Build change summary text
+  const formatChangeSummary = (changes) => {
+    if (!changes) return '';
+    const parts = [];
+    if (changes.tracksToAdd > 0) {
+      parts.push(`+${changes.tracksToAdd} track${changes.tracksToAdd !== 1 ? 's' : ''}`);
+    }
+    if (changes.tracksToRemove > 0) {
+      parts.push(`-${changes.tracksToRemove} track${changes.tracksToRemove !== 1 ? 's' : ''}`);
+    }
+    if (changes.sizeDelta && changes.sizeDelta !== 0) {
+      parts.push(`(${formatSizeDelta(changes.sizeDelta)})`);
+    }
+    return parts.join(' ');
+  };
+
+  // Check if all categories are up to date (no new tracks to download)
   let hasActionableItems = false;
   Object.entries(categories).forEach(([catName, catInfo]) => {
-    const installedInfo = installed[catName];
-    const isInstalled = installedInfo?.installed;
-    const hasUpdate = isInstalled && installedInfo?.version !== catInfo.version;
-    if (!isInstalled || hasUpdate) {
+    const isInstalled = catInfo.installed;
+    const hasNewTracks = catInfo.changes?.tracksToAdd > 0;
+    if (!isInstalled || hasNewTracks) {
       hasActionableItems = true;
     }
   });
@@ -991,11 +1040,8 @@ function showMusicLibraryModal() {
   }
 
   Object.entries(categories).forEach(([catName, catInfo]) => {
-    const installedInfo = installed[catName];
-    const isInstalled = installedInfo?.installed;
-    const installedVersion = installedInfo?.version;
-    const availableVersion = catInfo.version;
-    const hasUpdate = isInstalled && installedVersion !== availableVersion;
+    const isInstalled = catInfo.installed;
+    const hasNewTracks = catInfo.changes?.tracksToAdd > 0;
 
     const row = document.createElement('div');
     row.dataset.category = catName;
@@ -1006,21 +1052,21 @@ function showMusicLibraryModal() {
     input.value = catName;
     input.style.cssText = 'cursor: pointer; width: 14px; height: 14px; flex-shrink: 0;';
 
-    // State: installed (greyed), update available (blue), new (normal)
-    if (isInstalled && !hasUpdate) {
+    // State: installed & up to date (greyed), has new tracks (blue), new (normal), opted out (unchecked)
+    if (isInstalled && !hasNewTracks) {
       // Installed & up to date - checked and greyed out
       input.disabled = true;
       input.checked = true;
       input.style.opacity = '0.5';
       input.style.cursor = 'default';
       row.style.opacity = '0.7';
-    } else if (hasUpdate) {
-      // Update available - blue/highlighted
+    } else if (hasNewTracks && !catInfo.optedOut) {
+      // New tracks available (and not opted out) - blue/highlighted
       input.checked = true;
       selectedMusicCategories.push(catName);
       row.style.color = '#6cb2eb';
     } else {
-      // New - normal unchecked
+      // New category or opted out - normal unchecked
       input.checked = false;
     }
 
@@ -1041,29 +1087,34 @@ function showMusicLibraryModal() {
     label.style.cssText = 'flex: 1; letter-spacing: 1px;';
     
     const sizeStr = catInfo.totalSize ? formatSize(catInfo.totalSize) : '';
-    const trackCount = catInfo.songCount || 0;
-    label.textContent = `${catName} ${sizeStr ? `(${sizeStr} ${trackCount} tracks)` : ''}`;
-
-    // Version info
-    const versionSpan = document.createElement('span');
-    versionSpan.style.cssText = 'font-size: 10px; letter-spacing: 1px;';
     
-    if (hasUpdate) {
-      // Show: v2.0 (v1.0) with red tint on available
-      versionSpan.innerHTML = `<span style="color: #e57373;">v${formatVersion(availableVersion)}</span> <span style="color: var(--text-dim);">(v${formatVersion(installedVersion)})</span>`;
-    } else if (isInstalled) {
-      // Just installed version
-      versionSpan.textContent = `v${formatVersion(installedVersion)}`;
-      versionSpan.style.color = 'var(--text-dim)';
+    // Add "Up to date" after name if installed with no changes
+    if (isInstalled && !hasNewTracks) {
+      label.innerHTML = `${catName} <span style="font-size: 9px; color: var(--text-dim); margin-left: 6px;">Up to date</span>`;
     } else {
-      // New - show available version
-      versionSpan.textContent = `v${formatVersion(availableVersion)}`;
-      versionSpan.style.color = 'var(--text-secondary)';
+      label.textContent = catName;
+    }
+
+    // Track/size info (always shown)
+    const changeSpan = document.createElement('span');
+    changeSpan.style.cssText = 'font-size: 10px; letter-spacing: 1px;';
+    
+    if (!isInstalled) {
+      // New - show total size and track count
+      changeSpan.textContent = `${catInfo.trackCount} tracks (${sizeStr})`;
+      changeSpan.style.color = 'var(--text-secondary)';
+    } else if (hasNewTracks) {
+      // Has changes
+      changeSpan.innerHTML = `<span style="color: #e57373;">${formatChangeSummary(catInfo.changes)}</span>`;
+    } else {
+      // Up to date - still show track count and size
+      changeSpan.textContent = `${catInfo.trackCount} tracks (${sizeStr})`;
+      changeSpan.style.color = 'var(--text-dim)';
     }
 
     row.appendChild(input);
     row.appendChild(label);
-    row.appendChild(versionSpan);
+    row.appendChild(changeSpan);
 
     // Add remove button for installed categories
     if (isInstalled) {
@@ -1163,6 +1214,8 @@ async function confirmAndRemoveCategory(catName, catInfo, rowEl) {
     const onConfirm = async () => {
       if (deleteConfirmDontAsk.checked) {
         skipDeleteWarning = true;
+        // Save the preference
+        window.electronAPI.saveSettings({ skipDeleteWarning: true });
       }
       cleanup();
       await doRemove();

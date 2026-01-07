@@ -4,10 +4,9 @@ const fs = require('fs');
 const { exec, execFile } = require('child_process');
 const https = require('https');
 const os = require('os');
-const AdmZip = require('adm-zip');
 
 const GITHUB_REPO = 'CalvFletch/AmbienceApp';
-const MUSIC_LIBRARY_REPO = 'CalvFletch/AmbienceApp-MusicLibrary';
+const MUSIC_LIBRARY_R2_URL = 'https://pub-8d3c3b52c11c464ba2e463fc91bbb7e7.r2.dev';
 const CURRENT_VERSION = require('./package.json').version;
 
 // Dev mode check - only enable debug features when running unpackaged
@@ -30,16 +29,9 @@ const ICON_MANIFEST_PATH = path.join(ICON_CACHE_DIR, 'manifest.json');
 let iconManifest = null;
 
 // Music library versioning
-let libraryMetadataCache = null;
-let libraryMetadataCacheTime = 0;
-const LIBRARY_METADATA_CACHE_TTL = 3600000; // 1 hour
-const LIBRARY_METADATA_FILENAME = 'library-metadata.json';
-
-// GitHub releases cache (24 hours)
-let releasesCache = null;
-let releasesCacheTime = 0;
-const RELEASES_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
-const RELEASES_CACHE_FILENAME = 'releases-cache.json';
+const LIBRARY_MANIFEST_FILENAME = 'manifest.json';  // Unified manifest (remote)
+const LOCAL_MANIFEST_FILENAME = '.ambience-manifest.json';  // Local manifest (tracks + installed status)
+const LIBRARY_METADATA_FILENAME = 'library-metadata.json';  // Legacy - will be migrated and deleted
 
 function resetCaches() {
   exeIconCache = new Map();
@@ -604,7 +596,8 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: getAppPath('preload.js')
+      preload: getAppPath('preload.js'),
+      backgroundThrottling: false  // Ensure IPC events are processed when window is in background
     }
   });
 
@@ -818,7 +811,8 @@ ipcMain.handle('get-settings-state', async () => {
     duckExes: config.duckExes || [],
     duckDevices: config.duckDevices || [],
     cachedDevices: config.cachedDevices || [],
-    cachedProcesses: config.cachedProcesses || []
+    cachedProcesses: config.cachedProcesses || [],
+    skipDeleteWarning: config.skipDeleteWarning || false
   };
 });
 
@@ -1070,11 +1064,12 @@ ipcMain.handle('save-music-folder', async (event, folderPath) => {
     
     // All good - save and update
     musicFolder = normalizedPath;
-    saveConfig();
+    saveConfig({ musicFolder: normalizedPath });
     
     // Notify main window to refresh music files
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('music-files-updated');
+      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
     }
     
     return { success: true };
@@ -1119,6 +1114,7 @@ ipcMain.handle('preview-music-folder', async (event, folderPath) => {
     // Notify main window to refresh music files with new path
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('music-files-updated');
+      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
     }
     
     return { success: true };
@@ -1750,218 +1746,343 @@ ipcMain.handle('get-dismissed-update', async () => {
 });
 
 // === Music Library Management ===
+// All library state is stored in LOCAL_MANIFEST_FILENAME (.ambience-manifest.json)
+// This includes: tracks (for smart updates), categories, and installed status
 
-function getLibraryMetadataPath() {
+function readLocalManifest() {
   if (!musicFolder) return null;
-  return path.join(musicFolder, LIBRARY_METADATA_FILENAME);
-}
-
-function readLibraryMetadata() {
-  const metaPath = getLibraryMetadataPath();
-  if (!metaPath || !fs.existsSync(metaPath)) {
+  const manifestPath = path.join(musicFolder, LOCAL_MANIFEST_FILENAME);
+  if (!fs.existsSync(manifestPath)) {
     return null;
   }
   try {
-    const raw = fs.readFileSync(metaPath, 'utf8');
-    return JSON.parse(raw || '{}');
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   } catch (e) {
-    console.error('Failed to read library metadata:', e);
+    console.error('Failed to read local manifest:', e);
     return null;
   }
 }
 
-function writeLibraryMetadata(metadata) {
-  const metaPath = getLibraryMetadataPath();
-  if (!metaPath) return false;
+function saveLocalManifest(manifest) {
+  if (!musicFolder) return false;
+  const manifestPath = path.join(musicFolder, LOCAL_MANIFEST_FILENAME);
   try {
-    // Ensure music folder exists
     if (!fs.existsSync(musicFolder)) {
       fs.mkdirSync(musicFolder, { recursive: true });
     }
-    fs.writeFileSync(metaPath, JSON.stringify(metadata, null, 2));
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
     return true;
   } catch (e) {
-    console.error('Failed to write library metadata:', e);
+    console.error('Failed to save manifest:', e);
     return false;
   }
 }
 
-// Fetch all releases from music library repo (per-category releases)
-// Load releases cache from disk
-function loadReleasesCache() {
-  try {
-    const cachePath = path.join(musicFolder, RELEASES_CACHE_FILENAME);
-    if (fs.existsSync(cachePath)) {
-      const cacheData = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-      if (cacheData.releases && cacheData.timestamp) {
-        releasesCache = cacheData.releases;
-        releasesCacheTime = cacheData.timestamp;
-        return true;
-      }
+// Legacy compatibility - reads old library-metadata.json if exists
+function migrateLegacyMetadata() {
+  if (!musicFolder) return null;
+  const oldPath = path.join(musicFolder, LIBRARY_METADATA_FILENAME);
+  if (fs.existsSync(oldPath)) {
+    try {
+      const oldData = JSON.parse(fs.readFileSync(oldPath, 'utf8'));
+      // Delete old file after reading
+      fs.unlinkSync(oldPath);
+      return oldData;
+    } catch (e) {
+      console.error('Failed to migrate legacy metadata:', e);
     }
-  } catch (e) {
-    console.error('Failed to load releases cache:', e);
   }
-  return false;
+  return null;
 }
 
-// Save releases cache to disk
-function saveReleasesCache(releases) {
-  try {
-    const cachePath = path.join(musicFolder, RELEASES_CACHE_FILENAME);
-    fs.writeFileSync(cachePath, JSON.stringify({
-      releases: releases,
-      timestamp: Date.now()
-    }, null, 2));
-  } catch (e) {
-    console.error('Failed to save releases cache:', e);
-  }
-}
+// Fetch library manifest from Cloudflare R2
+let libraryManifestRemote = null;
+let libraryManifestRemoteTime = 0;
 
-// Fetch releases from GitHub API (no caching)
-function fetchReleasesFromAPI() {
+function fetchLibraryManifestFromR2() {
   return new Promise((resolve) => {
-    const options = {
-      hostname: 'api.github.com',
-      path: `/repos/${MUSIC_LIBRARY_REPO}/releases`,
-      headers: {
-        'User-Agent': 'AmbienceApp'
-      }
-    };
-
-    https.get(options, (res) => {
+    const url = `${MUSIC_LIBRARY_R2_URL}/manifest.json`;
+    
+    https.get(url, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
-          const releases = JSON.parse(data);
-          // Ensure we got an array (API might return error object on rate limit, etc.)
-          if (!Array.isArray(releases)) {
-            console.error('GitHub API returned non-array:', releases.message || releases);
-            resolve(null);
-            return;
-          }
-          resolve(releases);
+          const manifest = JSON.parse(data);
+          resolve(manifest);
         } catch (e) {
-          console.error('Failed to parse releases:', e);
+          console.error('Failed to parse library manifest:', e);
           resolve(null);
         }
       });
     }).on('error', (e) => {
-      console.error('Failed to fetch releases:', e);
+      console.error('Failed to fetch library manifest:', e);
       resolve(null);
     });
   });
 }
 
-// Fetch library metadata from GitHub (raw file)
-let libraryMetadataRemote = null;
-let libraryMetadataRemoteTime = 0;
-
-function fetchLibraryMetadataFromGitHub() {
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'raw.githubusercontent.com',
-      path: `/${MUSIC_LIBRARY_REPO}/main/library-metadata.json`,
-      headers: {
-        'User-Agent': 'AmbienceApp'
-      }
-    };
-
-    https.get(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const metadata = JSON.parse(data);
-          resolve(metadata);
-        } catch (e) {
-          console.error('Failed to parse library metadata:', e);
-          resolve(null);
-        }
-      });
-    }).on('error', (e) => {
-      console.error('Failed to fetch library metadata:', e);
-      resolve(null);
-    });
-  });
-}
-
-async function getLibraryMetadataRemote(forceRefresh = false) {
+async function getLibraryManifestRemote(forceRefresh = false) {
   const now = Date.now();
   
   // Cache for 1 hour
-  if (!forceRefresh && libraryMetadataRemote && (now - libraryMetadataRemoteTime) < 3600000) {
-    return libraryMetadataRemote;
+  if (!forceRefresh && libraryManifestRemote && (now - libraryManifestRemoteTime) < 3600000) {
+    return libraryManifestRemote;
   }
   
-  const metadata = await fetchLibraryMetadataFromGitHub();
-  if (metadata) {
-    libraryMetadataRemote = metadata;
-    libraryMetadataRemoteTime = now;
+  const manifest = await fetchLibraryManifestFromR2();
+  if (manifest) {
+    libraryManifestRemote = manifest;
+    libraryManifestRemoteTime = now;
   }
-  return metadata || libraryMetadataRemote;
+  return manifest || libraryManifestRemote;
 }
 
-// Fetch releases with 24-hour caching
-async function fetchMusicLibraryReleases(forceRefresh = false) {
-  const now = Date.now();
+// Silent library sync: moves misplaced files and deletes removed tracks
+// Called on app startup - no user interaction needed
+async function performSilentLibrarySync() {
+  if (!musicFolder) return { moved: 0, deleted: 0 };
   
-  // Try to load from disk cache if not in memory
-  if (!releasesCache) {
-    loadReleasesCache();
-  }
+  const localManifest = readLocalManifest();
+  if (!localManifest || !localManifest.tracks) return { moved: 0, deleted: 0 };
   
-  // Check if cache is still valid (24 hours)
-  if (!forceRefresh && releasesCache && (now - releasesCacheTime) < RELEASES_CACHE_TTL) {
-    console.log('Using cached releases (expires in', Math.round((RELEASES_CACHE_TTL - (now - releasesCacheTime)) / 3600000), 'hours)');
-    return releasesCache;
-  }
+  const remoteManifest = await getLibraryManifestRemote();
+  if (!remoteManifest || !remoteManifest.tracks) return { moved: 0, deleted: 0 };
   
-  // Fetch fresh data from API
-  console.log('Fetching fresh releases from GitHub API...');
-  const releases = await fetchReleasesFromAPI();
-  
-  if (releases) {
-    // Update cache
-    releasesCache = releases;
-    releasesCacheTime = now;
-    saveReleasesCache(releases);
-    return releases;
-  }
-  
-  // If API failed but we have stale cache, use it
-  if (releasesCache) {
-    console.log('API failed, using stale cache');
-    return releasesCache;
-  }
-  
-  return [];
-}
-
-// Debug: Force refresh music library releases (bypass cache)
-ipcMain.handle('debug-force-refresh-library', async () => {
-  console.log('Force refreshing music library releases...');
-  releasesCache = null;
-  releasesCacheTime = 0;
-  
-  // Delete disk cache file
-  if (musicFolder) {
-    const cacheFile = path.join(musicFolder, RELEASES_CACHE_FILENAME);
-    try {
-      if (fs.existsSync(cacheFile)) {
-        fs.unlinkSync(cacheFile);
-      }
-    } catch (e) {
-      console.error('Failed to delete cache file:', e);
+  // Only sync categories that are installed
+  const installedCategories = localManifest.installedCategories || {};
+  const installedSlugs = new Set();
+  for (const [name, info] of Object.entries(installedCategories)) {
+    if (info.installed) {
+      installedSlugs.add(name.toLowerCase().replace(/\s+/g, '-'));
     }
   }
   
-  const releases = await fetchMusicLibraryReleases(true);
+  if (installedSlugs.size === 0) return { moved: 0, deleted: 0 };
+  
+  // Build remote lookup by ID
+  const remoteById = {};
+  for (const track of remoteManifest.tracks) {
+    remoteById[track.id] = track;
+  }
+  
+  // Build local lookup by ID
+  const localById = {};
+  for (const track of localManifest.tracks) {
+    localById[track.id] = track;
+  }
+  
+  let movedCount = 0;
+  let deletedCount = 0;
+  const updatedTracks = [];
+  
+  // Check each local track
+  for (const localTrack of localManifest.tracks) {
+    // Skip if not in an installed category
+    if (!installedSlugs.has(localTrack.category)) continue;
+    
+    const remoteTrack = remoteById[localTrack.id];
+    
+    if (!remoteTrack) {
+      // Track no longer exists in remote - delete it silently
+      const filePath = path.join(musicFolder, localTrack.category, localTrack.path);
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+          deletedCount++;
+        }
+      } catch (e) {
+        console.error(`Failed to delete ${filePath}:`, e.message);
+      }
+      // Don't add to updatedTracks (it's deleted)
+    } else if (remoteTrack.category !== localTrack.category || remoteTrack.path !== localTrack.path) {
+      // Track moved to different location - move it silently
+      const oldPath = path.join(musicFolder, localTrack.category, localTrack.path);
+      // Find the category name for the new location
+      let newCatName = remoteTrack.category;
+      for (const [name, info] of Object.entries(installedCategories)) {
+        if (name.toLowerCase().replace(/\s+/g, '-') === remoteTrack.category) {
+          newCatName = name;
+          break;
+        }
+      }
+      const newPath = path.join(musicFolder, newCatName, remoteTrack.path);
+      
+      try {
+        if (fs.existsSync(oldPath)) {
+          // Ensure destination directory exists
+          const newDir = path.dirname(newPath);
+          if (!fs.existsSync(newDir)) {
+            fs.mkdirSync(newDir, { recursive: true });
+          }
+          fs.renameSync(oldPath, newPath);
+          movedCount++;
+        }
+      } catch (e) {
+        console.error(`Failed to move ${oldPath}:`, e.message);
+      }
+      // Add with new location
+      updatedTracks.push(remoteTrack);
+    } else {
+      // Track unchanged - keep it
+      updatedTracks.push(localTrack);
+    }
+  }
+  
+  // Clean up empty directories
+  for (const catSlug of installedSlugs) {
+    let catName = catSlug;
+    for (const [name, info] of Object.entries(installedCategories)) {
+      if (name.toLowerCase().replace(/\s+/g, '-') === catSlug) {
+        catName = name;
+        break;
+      }
+    }
+    const catPath = path.join(musicFolder, catName);
+    cleanEmptyDirs(catPath);
+  }
+  
+  // Update local manifest if changes were made
+  if (movedCount > 0 || deletedCount > 0) {
+    localManifest.tracks = updatedTracks;
+    localManifest.lastUpdated = new Date().toISOString();
+    saveLocalManifest(localManifest);
+    
+    // Notify renderer to refresh
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('music-files-updated');
+      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
+    }
+  }
+  
+  return { moved: movedCount, deleted: deletedCount };
+}
+
+// Helper: recursively clean empty directories
+function cleanEmptyDirs(dirPath) {
+  if (!fs.existsSync(dirPath)) return;
+  
+  try {
+    const items = fs.readdirSync(dirPath);
+    
+    for (const item of items) {
+      const itemPath = path.join(dirPath, item);
+      if (fs.statSync(itemPath).isDirectory()) {
+        cleanEmptyDirs(itemPath);
+      }
+    }
+    
+    // Check again after cleaning subdirs
+    const remaining = fs.readdirSync(dirPath);
+    if (remaining.length === 0) {
+      fs.rmdirSync(dirPath);
+    }
+  } catch (e) {
+    // Ignore errors
+  }
+}
+
+// Calculate library changes for display (what needs download vs what's silent)
+async function calculateLibraryChanges() {
+  const localManifest = readLocalManifest();
+  const remoteManifest = await getLibraryManifestRemote();
+  
+  if (!remoteManifest || !remoteManifest.categories) {
+    return { categories: {} };
+  }
+  
+  const installedCategories = localManifest?.installedCategories || {};
+  const result = { categories: {} };
+  
+  // Build remote track lookup
+  const remoteById = {};
+  const remoteByCategory = {};
+  for (const track of (remoteManifest.tracks || [])) {
+    remoteById[track.id] = track;
+    if (!remoteByCategory[track.category]) remoteByCategory[track.category] = [];
+    remoteByCategory[track.category].push(track);
+  }
+  
+  // Build local track lookup
+  const localById = {};
+  const localByCategory = {};
+  for (const track of (localManifest?.tracks || [])) {
+    localById[track.id] = track;
+    if (!localByCategory[track.category]) localByCategory[track.category] = [];
+    localByCategory[track.category].push(track);
+  }
+  
+  for (const [slug, catInfo] of Object.entries(remoteManifest.categories)) {
+    const catName = catInfo.name;
+    const installed = installedCategories[catName];
+    const isInstalled = installed?.installed;
+    
+    const remoteTracks = remoteByCategory[slug] || [];
+    const localTracks = localByCategory[slug] || [];
+    
+    // Calculate changes
+    let tracksToAdd = 0;
+    let tracksToRemove = 0;
+    let bytesToAdd = 0;
+    let bytesToRemove = 0;
+    
+    if (isInstalled) {
+      // Check what's new in remote
+      for (const track of remoteTracks) {
+        if (!localById[track.id]) {
+          tracksToAdd++;
+          bytesToAdd += track.size || 0;
+        }
+      }
+      
+      // Check what's removed from remote  
+      for (const track of localTracks) {
+        if (!remoteById[track.id]) {
+          tracksToRemove++;
+          bytesToRemove += track.size || 0;
+        }
+      }
+    } else {
+      // Not installed - all remote tracks would be added
+      tracksToAdd = remoteTracks.length;
+      for (const track of remoteTracks) {
+        bytesToAdd += track.size || 0;
+      }
+    }
+    
+    result.categories[catName] = {
+      slug,
+      name: catName,
+      installed: isInstalled,
+      optedOut: installed?.optedOut || false,
+      trackCount: remoteTracks.length,
+      totalSize: remoteTracks.reduce((sum, t) => sum + (t.size || 0), 0),
+      icon: catInfo.icon,
+      changes: {
+        tracksToAdd,
+        tracksToRemove,
+        bytesToAdd,
+        bytesToRemove,
+        sizeDelta: bytesToAdd - bytesToRemove,
+        hasChanges: tracksToAdd > 0 || tracksToRemove > 0
+      }
+    };
+  }
+  
+  return result;
+}
+
+// Debug: Force refresh music library manifest (bypass cache)
+ipcMain.handle('debug-force-refresh-library', async () => {
+  // Clear manifest cache
+  libraryManifestRemote = null;
+  libraryManifestRemoteTime = 0;
+  
+  const manifest = await getLibraryManifestRemote(true);
   return {
     success: true,
-    releaseCount: releases?.length || 0,
-    releases: releases?.map(r => r.tag_name) || []
+    categoryCount: manifest?.categories ? Object.keys(manifest.categories).length : 0,
+    categories: manifest?.categories ? Object.keys(manifest.categories) : []
   };
 });
 
@@ -1983,150 +2104,158 @@ ipcMain.handle('debug-clear-library-metadata', async () => {
   }
 });
 
-// Parse category info from release (tag format: category-version, e.g., skyrim-1.0.0)
-function parseCategoryFromRelease(release) {
-  if (!release.tag_name) return null;
-  
-  // Tag format: category-name-version (e.g., skyrim-1.0.0, star-wars-1.0.0)
-  const tagParts = release.tag_name.split('-');
-  if (tagParts.length < 2) return null;
-  
-  // Version is always the last part
-  const version = tagParts.pop();
-  // Category name is everything before version (rejoined with spaces, title case)
-  const categorySlug = tagParts.join('-');
-  const categoryName = categorySlug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-  
-  // Get archive names from release assets
-  // Support both single .zip and split files (.zip.001, .zip.002, etc.)
-  const archiveNames = (release.assets || [])
-    .filter(a => a.name.endsWith('.zip') || /\.zip\.\d{3}$/.test(a.name))
-    .map(a => a.name)
-    .sort(); // Ensure parts are in order
-  
-  // Parse release notes for metadata (songCount and totalSize)
-  let songCount = 0;
-  let totalSize = 0;
-  const body = release.body || '';
-  
-  // Match "Media files: 3" format
-  const songMatch = body.match(/Media files:\s*(\d+)/i);
-  if (songMatch) songCount = parseInt(songMatch[1], 10);
-  
-  // Match "Size: 245.2 MB" or "Size: 1.5 GB" format and convert to bytes
-  const sizeMatch = body.match(/Size:\s*([\d.]+)\s*(MB|GB)/i);
-  if (sizeMatch) {
-    const sizeValue = parseFloat(sizeMatch[1]);
-    const sizeUnit = sizeMatch[2].toUpperCase();
-    if (sizeUnit === 'GB') {
-      totalSize = Math.round(sizeValue * 1024 * 1024 * 1024);
-    } else {
-      totalSize = Math.round(sizeValue * 1024 * 1024);
-    }
-  }
-  
-  return {
-    name: categoryName,
-    slug: categorySlug,
-    version: version,
-    releaseTag: release.tag_name,
-    releaseUrl: release.html_url,
-    archiveNames: archiveNames,
-    songCount: songCount,
-    totalSize: totalSize
-  };
-}
-
-// Build available categories from all releases (each release = one category)
+// Build available categories from manifest (categories hosted on R2)
 async function buildAvailableCategoriesMap() {
-  const releases = await fetchMusicLibraryReleases();
-  const metadata = await getLibraryMetadataRemote();
+  const manifest = await getLibraryManifestRemote();
   
-  if (!Array.isArray(releases) || releases.length === 0) return {};
+  if (!manifest || !manifest.categories) return {};
 
   const categoryMap = {};
   
-  // Group releases by category, keep only the latest version of each
-  for (const release of releases) {
-    const catInfo = parseCategoryFromRelease(release);
-    if (!catInfo) continue;
-    
-    // Only keep if this is the first (latest) release for this category
-    // or if it has a higher version
-    const existing = categoryMap[catInfo.name];
-    if (!existing || compareVersions(catInfo.version, existing.version) > 0) {
-      // Get metadata from the central metadata file if available
-      const metaCat = metadata?.categories?.[catInfo.name];
-      
-      categoryMap[catInfo.name] = {
-        name: catInfo.name,
-        slug: catInfo.slug,
-        version: catInfo.version,
-        releaseTag: catInfo.releaseTag,
-        releaseUrl: catInfo.releaseUrl,
-        archiveNames: metaCat?.archives || catInfo.archiveNames,
-        songCount: metaCat?.songCount || catInfo.songCount,
-        totalSize: metaCat?.totalSize || catInfo.totalSize
-      };
-    }
+  // Categories come from manifest which has all the info we need
+  for (const [slug, catInfo] of Object.entries(manifest.categories)) {
+    categoryMap[catInfo.name] = {
+      name: catInfo.name,
+      slug: slug,
+      version: catInfo.version,
+      downloadUrl: catInfo.downloadUrl,  // R2 URL
+      songCount: catInfo.trackCount || 0,
+      totalSize: 0  // Could be calculated from tracks if needed
+    };
   }
 
   return categoryMap;
 }
 
-// Get music library status
+// Get music library status (with detailed change info)
 ipcMain.handle('get-music-library-status', async () => {
-  const localMetadata = readLibraryMetadata();
-  const availableCategories = await buildAvailableCategoriesMap();
+  // Try to migrate legacy metadata if exists
+  const legacyData = migrateLegacyMetadata();
+  let localManifest = readLocalManifest();
+  
+  // Merge legacy data into manifest if needed
+  if (legacyData && legacyData.installedCategories) {
+    if (!localManifest) {
+      localManifest = { categories: {}, tracks: [], installedCategories: {} };
+    }
+    localManifest.installedCategories = legacyData.installedCategories;
+    localManifest.lastUpdated = legacyData.lastUpdated;
+    saveLocalManifest(localManifest);
+  }
+  
+  // Perform silent sync (moves and deletes) first
+  await performSilentLibrarySync();
+  
+  // Reload manifest after sync
+  localManifest = readLocalManifest();
+  
+  // Get detailed change info
+  const libraryChanges = await calculateLibraryChanges();
 
   const status = {
     musicFolderPath: musicFolder,
-    localMetadata: localMetadata || null,
-    availableCategories: availableCategories,
+    localMetadata: localManifest ? { installedCategories: localManifest.installedCategories || {} } : null,
+    libraryChanges: libraryChanges,
     status: 'not-installed',
-    aggregatedVersion: null,
-    newOrUpdatedCategories: []
+    categoriesWithChanges: []
   };
 
-  if (!localMetadata) {
+  if (!localManifest || !localManifest.installedCategories) {
     status.status = 'not-installed';
     return status;
   }
 
-  // Check if any categories have updates or are missing
-  const installedCats = localMetadata.installedCategories || {};
-  const hasUpdates = Object.entries(installedCats).some(([catName, catData]) => {
-    const available = availableCategories[catName];
-    return available && available.version !== catData.version;
-  });
+  // Check for categories with changes (need downloads)
+  const installedCats = localManifest.installedCategories || {};
+  const categoriesWithChanges = [];
+  
+  for (const [catName, catChanges] of Object.entries(libraryChanges.categories || {})) {
+    const installed = installedCats[catName];
+    if (installed?.installed && catChanges.changes?.hasChanges && catChanges.changes.tracksToAdd > 0) {
+      categoriesWithChanges.push(catName);
+    }
+  }
 
-  const missingNew = Object.keys(availableCategories).filter(catName => {
+  // Also check for new categories not yet installed
+  const newCategories = Object.keys(libraryChanges.categories || {}).filter(catName => {
     const installed = installedCats[catName];
     return !installed || !installed.installed;
   });
 
-  if (hasUpdates || missingNew.length > 0) {
+  if (categoriesWithChanges.length > 0 || newCategories.length > 0) {
     status.status = 'out-of-date';
-    status.newOrUpdatedCategories = missingNew;
+    status.categoriesWithChanges = categoriesWithChanges;
+    status.newCategories = newCategories;
   } else {
     status.status = 'up-to-date';
   }
 
-  // Calculate aggregated version (highest version of installed categories)
-  let maxVersion = '0.0';
-  Object.values(installedCats).forEach(catData => {
-    if (catData.installed && catData.version) {
-      if (compareVersions(catData.version, maxVersion) > 0) {
-        maxVersion = catData.version;
-      }
-    }
-  });
-
-  status.aggregatedVersion = maxVersion !== '0.0' ? maxVersion : null;
   return status;
 });
 
-// Download and extract library categories
+// Helper: Calculate smart updates using unified manifest (cross-category aware)
+// Tracks include category, so full path is: category/path
+// Returns: { filesToDownload: [], filesToMove: [], filesToDelete: [] }
+function calculateSmartUpdate(localManifest, newManifest, categoriesToUpdate) {
+  const result = {
+    filesToDownload: [],   // { id, category, path } - new or changed files
+    filesToMove: [],       // { id, fromCategory, fromPath, toCategory, toPath } - same file, different location
+    filesToDelete: []      // { id, category, path } - our files no longer in manifest
+  };
+  
+  // Build lookup maps from local manifest
+  const localById = {};
+  if (localManifest && localManifest.tracks) {
+    for (const track of localManifest.tracks) {
+      localById[track.id] = track;
+    }
+  }
+  
+  // Build set of categories being updated
+  const updatingCategories = new Set(categoriesToUpdate.map(c => c.toLowerCase().replace(/\s+/g, '-')));
+  
+  // Check each track in new manifest for categories we're updating
+  const newTracksInScope = (newManifest?.tracks || []).filter(t => updatingCategories.has(t.category));
+  
+  for (const newTrack of newTracksInScope) {
+    const localTrack = localById[newTrack.id];
+    
+    if (!localTrack) {
+      // ID doesn't exist locally - need to download
+      result.filesToDownload.push(newTrack);
+    } else if (localTrack.category !== newTrack.category || localTrack.path !== newTrack.path) {
+      // Same ID but different category or path - move the file
+      result.filesToMove.push({
+        id: newTrack.id,
+        fromCategory: localTrack.category,
+        fromPath: localTrack.path,
+        toCategory: newTrack.category,
+        toPath: newTrack.path
+      });
+    }
+    // If same ID, same category, same path - file unchanged, do nothing
+  }
+  
+  // Check for files to delete (in local manifest for updated categories but not in new)
+  const newById = {};
+  for (const track of (newManifest?.tracks || [])) {
+    newById[track.id] = track;
+  }
+  
+  for (const localTrack of (localManifest?.tracks || [])) {
+    // Only consider tracks in categories we're updating
+    if (!updatingCategories.has(localTrack.category)) continue;
+    
+    if (!newById[localTrack.id]) {
+      // Our file is no longer in the new manifest - delete it
+      result.filesToDelete.push(localTrack);
+    }
+  }
+  
+  return result;
+}
+
+// Download library categories (individual files from R2)
 ipcMain.handle('download-library-categories', async (event, options) => {
   const { categories, targetFolder } = options;
 
@@ -2144,114 +2273,97 @@ ipcMain.handle('download-library-categories', async (event, options) => {
       fs.mkdirSync(targetFolder, { recursive: true });
     }
 
-    // Fetch available categories
-    const availableCategories = await buildAvailableCategoriesMap();
+    // Fetch manifest (has all track URLs)
+    const remoteManifest = await getLibraryManifestRemote();
+    if (!remoteManifest || !remoteManifest.tracks) {
+      return { success: false, error: 'Could not fetch music library manifest' };
+    }
+    
+    // Read local manifest
+    const localManifest = readLocalManifest();
+    const installedCategories = localManifest?.installedCategories || {};
+    
+    // Build set of tracks we already have (by ID)
+    const localTrackIds = new Set();
+    if (localManifest?.tracks) {
+      for (const t of localManifest.tracks) {
+        localTrackIds.add(t.id);
+      }
+    }
 
-    // Read current metadata
-    const currentMetadata = readLibraryMetadata() || {
-      musicFolderPath: targetFolder,
-      lastUpdated: new Date().toISOString(),
-      installedCategories: {}
-    };
-
-    // Download and extract each category
+    // Download each category
     for (const categoryName of categories) {
-      const categoryInfo = availableCategories[categoryName];
-      if (!categoryInfo) {
-        console.warn(`Category ${categoryName} not found in available releases`);
+      const catSlug = categoryName.toLowerCase().replace(/\s+/g, '-');
+      
+      // Get tracks for this category
+      const categoryTracks = remoteManifest.tracks.filter(t => t.category === catSlug);
+      if (categoryTracks.length === 0) {
+        console.warn(`No tracks found for category: ${categoryName}`);
         continue;
       }
-
+      
+      // Filter to only tracks we don't have
+      const tracksToDownload = categoryTracks.filter(t => !localTrackIds.has(t.id));
+      
       event.sender.send('music-download-progress', {
         category: categoryName,
         status: 'downloading',
-        percent: 0
+        percent: 0,
+        total: tracksToDownload.length,
+        current: 0
       });
 
-      // Download all archive parts for this category
-      const archiveNames = categoryInfo.archiveNames || [];
-      if (archiveNames.length === 0) {
-        console.warn(`No archive names for category ${categoryName}`);
-        continue;
-      }
-
-      // Prepare extraction path
-      const extractPath = path.join(targetFolder, categoryName);
-      if (!fs.existsSync(extractPath)) {
-        fs.mkdirSync(extractPath, { recursive: true });
-      }
-
-      // Check if this is a split archive (.zip.001, .zip.002, etc.)
-      const isSplitArchive = archiveNames.some(name => /\.zip\.\d{3}$/.test(name));
-      const downloadedParts = [];
-
-      // Download each part
-      for (let i = 0; i < archiveNames.length; i++) {
-        const archiveName = archiveNames[i];
-        const tempPath = path.join(os.tmpdir(), `ambience-${categoryName}-part${i}${isSplitArchive ? '.part' : '.zip'}`);
-
-        const downloadSuccess = await downloadGitHubAsset(
-          categoryInfo.releaseTag,
-          archiveName,
-          tempPath,
-          (percent) => {
-            // Calculate overall progress across all parts
-            const partProgress = (i + percent / 100) / archiveNames.length * 100;
-            event.sender.send('music-download-progress', {
-              category: categoryName,
-              status: 'downloading',
-              percent: Math.floor(partProgress)
-            });
-          }
-        );
-
-        if (!downloadSuccess) {
-          // Clean up any downloaded parts
-          downloadedParts.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
-          return { success: false, error: `Failed to download ${archiveName}` };
-        }
-
-        downloadedParts.push(tempPath);
-      }
-
-      // Combine parts if split archive, then extract
-      event.sender.send('music-download-progress', {
-        category: categoryName,
-        status: 'extracting',
-        percent: 0
-      });
-
-      let finalZipPath;
-      if (isSplitArchive && downloadedParts.length > 1) {
-        // Combine split parts into single zip
-        finalZipPath = path.join(os.tmpdir(), `ambience-${categoryName}-combined.zip`);
-        const combineSuccess = await combineSplitArchive(downloadedParts, finalZipPath);
+      // Download each track
+      let downloaded = 0;
+      for (const track of tracksToDownload) {
+        const destPath = path.join(targetFolder, categoryName, track.path);
+        const destDir = path.dirname(destPath);
         
-        // Clean up parts
-        downloadedParts.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
-        
-        if (!combineSuccess) {
-          return { success: false, error: `Failed to combine split archive for ${categoryName}` };
+        // Ensure directory exists
+        if (!fs.existsSync(destDir)) {
+          fs.mkdirSync(destDir, { recursive: true });
         }
-      } else {
-        // Single zip file
-        finalZipPath = downloadedParts[0];
+        
+        // Download file
+        const success = await downloadFromUrl(track.url, destPath);
+        
+        if (success) {
+          downloaded++;
+          const percent = Math.floor((downloaded / tracksToDownload.length) * 100);
+          event.sender.send('music-download-progress', {
+            category: categoryName,
+            status: 'downloading',
+            percent: percent,
+            total: tracksToDownload.length,
+            current: downloaded
+          });
+        } else {
+          console.warn(`Failed to download: ${track.filename}`);
+        }
       }
 
-      // Extract the archive
-      const extractSuccess = await extractZip(finalZipPath, extractPath);
+      // Get category info from manifest
+      const catInfo = remoteManifest.categories?.[catSlug] || {};
       
-      // Clean up
-      try { fs.unlinkSync(finalZipPath); } catch (e) {}
-      
-      if (!extractSuccess) {
-        return { success: false, error: `Failed to extract ${categoryName}` };
+      // Download category icon if available
+      if (catInfo.icon) {
+        const iconDestPath = path.join(targetFolder, categoryName, 'icon.png');
+        const iconDir = path.dirname(iconDestPath);
+        
+        // Ensure directory exists
+        if (!fs.existsSync(iconDir)) {
+          fs.mkdirSync(iconDir, { recursive: true });
+        }
+        
+        const iconDownloaded = await downloadFromUrl(catInfo.icon, iconDestPath);
+        if (!iconDownloaded) {
+          console.warn(`Failed to download icon for ${categoryName}`);
+        }
       }
-
-      // Update metadata for this category
-      currentMetadata.installedCategories[categoryName] = {
-        version: categoryInfo.version,
-        releaseTag: categoryInfo.releaseTag,
+      
+      // Update installed status
+      installedCategories[categoryName] = {
+        version: catInfo.version || '1.0.0',
         installed: true,
         optedOut: false
       };
@@ -2263,30 +2375,34 @@ ipcMain.handle('download-library-categories', async (event, options) => {
       });
     }
 
-    // Track all available categories - mark unselected ones as opted out
+    // Build final manifest
+    const finalManifest = { ...remoteManifest };
+    
+    // Mark unselected categories as opted out
+    const availableCategories = await buildAvailableCategoriesMap();
     for (const [catName, catInfo] of Object.entries(availableCategories)) {
-      if (!currentMetadata.installedCategories[catName]) {
-        // Category exists but wasn't selected - mark as opted out
-        currentMetadata.installedCategories[catName] = {
+      if (!installedCategories[catName]) {
+        installedCategories[catName] = {
           version: catInfo.version,
-          releaseTag: catInfo.releaseTag,
           installed: false,
           optedOut: true
         };
       }
     }
+    
+    finalManifest.installedCategories = installedCategories;
+    finalManifest.lastUpdated = new Date().toISOString();
+    finalManifest.musicFolderPath = targetFolder;
+    
+    saveLocalManifest(finalManifest);
 
-    // Write updated metadata
-    currentMetadata.lastUpdated = new Date().toISOString();
-    currentMetadata.musicFolderPath = targetFolder;
-    writeLibraryMetadata(currentMetadata);
-
-    // Notify main window to refresh music files
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('music-files-updated');
+      // Also try executeJavaScript as a fallback
+      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
     }
 
-    return { success: true, metadata: currentMetadata };
+    return { success: true, metadata: { installedCategories } };
   } catch (e) {
     console.error('Download failed:', e);
     return { success: false, error: e.message };
@@ -2300,29 +2416,59 @@ ipcMain.handle('remove-library-category', async (event, categoryName) => {
       return { success: false, error: 'No category specified' };
     }
 
+    // Tell main window to release any files from this category
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('release-category-files', categoryName);
+      // Give renderer time to fully release file handles
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
     // Get the category folder path
     const categoryFolder = path.join(musicFolder, categoryName);
     
-    // Delete the folder if it exists
+    // Delete the folder with retry (file handles may take time to release)
     if (fs.existsSync(categoryFolder)) {
-      fs.rmSync(categoryFolder, { recursive: true, force: true });
+      let attempts = 0;
+      const maxAttempts = 5;
+      while (attempts < maxAttempts) {
+        try {
+          fs.rmSync(categoryFolder, { recursive: true, force: true });
+          break; // Success
+        } catch (rmErr) {
+          attempts++;
+          if (attempts >= maxAttempts) {
+            throw rmErr; // Give up after max attempts
+          }
+          // Wait longer between retries (200, 400, 600, 800ms)
+          await new Promise(resolve => setTimeout(resolve, attempts * 200));
+        }
+      }
     }
 
-    // Update metadata
-    const currentMetadata = readLibraryMetadata();
-    if (currentMetadata && currentMetadata.installedCategories) {
-      if (currentMetadata.installedCategories[categoryName]) {
+    // Update manifest
+    const localManifest = readLocalManifest();
+    if (localManifest && localManifest.installedCategories) {
+      if (localManifest.installedCategories[categoryName]) {
         // Mark as not installed but keep the entry for optedOut tracking
-        currentMetadata.installedCategories[categoryName].installed = false;
-        currentMetadata.installedCategories[categoryName].optedOut = true;
-        currentMetadata.lastUpdated = new Date().toISOString();
-        writeLibraryMetadata(currentMetadata);
+        localManifest.installedCategories[categoryName].installed = false;
+        localManifest.installedCategories[categoryName].optedOut = true;
+        localManifest.lastUpdated = new Date().toISOString();
+        
+        // Remove tracks for this category from manifest
+        if (localManifest.tracks) {
+          const catSlug = categoryName.toLowerCase().replace(/\s+/g, '-');
+          localManifest.tracks = localManifest.tracks.filter(t => t.category !== catSlug);
+        }
+        
+        saveLocalManifest(localManifest);
       }
     }
 
     // Notify main window to refresh music files
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('music-files-updated');
+      // Also try executeJavaScript as a fallback
+      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
     }
 
     return { success: true };
@@ -2332,114 +2478,63 @@ ipcMain.handle('remove-library-category', async (event, categoryName) => {
   }
 });
 
-// Helper: download GitHub release asset
-function downloadGitHubAsset(releaseTag, assetName, outputPath, progressCallback) {
-  return new Promise((resolve) => {
-    // Use direct download URL format for GitHub releases
-    const url = `https://github.com/${MUSIC_LIBRARY_REPO}/releases/download/${releaseTag}/${assetName}`;
-    
-    https.get(url, (res) => {
-      // Handle redirects (GitHub always redirects release downloads)
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        https.get(res.headers.location, (redirectRes) => {
-          handleDownloadResponse(redirectRes, outputPath, progressCallback, resolve);
-        }).on('error', () => resolve(false));
-      } else {
-        handleDownloadResponse(res, outputPath, progressCallback, resolve);
-      }
-    }).on('error', () => resolve(false));
-  });
-}
-
-function handleDownloadResponse(res, outputPath, progressCallback, resolve) {
-  const file = fs.createWriteStream(outputPath);
-  const totalSize = parseInt(res.headers['content-length'], 10);
-  let downloadedSize = 0;
-
-  res.on('data', (chunk) => {
-    downloadedSize += chunk.length;
-    if (progressCallback && totalSize) {
-      progressCallback((downloadedSize / totalSize) * 100);
-    }
-  });
-
-  res.pipe(file);
-  file.on('finish', () => {
-    file.close();
-    resolve(true);
-  });
-  file.on('error', () => {
-    fs.unlink(outputPath, () => {});
-    resolve(false);
-  });
-}
-
-// Helper: combine split archive parts (.zip.001, .zip.002, etc.) into single .zip
-function combineSplitArchive(partPaths, outputPath) {
+// Helper: download file from URL (for R2 or any direct URL)
+function downloadFromUrl(url, outputPath, progressCallback) {
   return new Promise((resolve) => {
     try {
-      const writeStream = fs.createWriteStream(outputPath);
-      let currentIndex = 0;
-
-      function appendNextPart() {
-        if (currentIndex >= partPaths.length) {
-          writeStream.end();
-          resolve(true);
-          return;
+      const parsedUrl = new URL(url);
+      const protocol = parsedUrl.protocol === 'https:' ? https : require('http');
+      
+      const options = {
+        hostname: parsedUrl.hostname,
+        path: parsedUrl.pathname + parsedUrl.search,
+        headers: {
+          'User-Agent': 'AmbienceApp'
         }
-
-        const partPath = partPaths[currentIndex];
-        const readStream = fs.createReadStream(partPath);
-        
-        readStream.on('end', () => {
-          currentIndex++;
-          appendNextPart();
-        });
-        
-        readStream.on('error', (err) => {
-          console.error('Error reading part:', err);
-          writeStream.end();
-          resolve(false);
-        });
-
-        readStream.pipe(writeStream, { end: false });
+      };
+      
+      protocol.get(options, (res) => {
+      // Handle redirects
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        downloadFromUrl(res.headers.location, outputPath, progressCallback)
+          .then(resolve);
+        return;
       }
-
-      writeStream.on('error', (err) => {
-        console.error('Error writing combined archive:', err);
-        resolve(false);
-      });
-
-      appendNextPart();
-    } catch (error) {
-      console.error('Combine failed:', error);
-      resolve(false);
-    }
-  });
-}
-
-// Helper: extract zip file using adm-zip (pure JavaScript, cross-platform)
-function extractZip(zipPath, outputPath) {
-  return new Promise((resolve) => {
-    try {
-      if (!fs.existsSync(zipPath)) {
-        console.error('Zip file not found:', zipPath);
+      
+      if (res.statusCode !== 200) {
+        console.error(`Download failed: HTTP ${res.statusCode} for ${url}`);
         resolve(false);
         return;
       }
+      
+      const file = fs.createWriteStream(outputPath);
+      const totalSize = parseInt(res.headers['content-length'], 10);
+      let downloadedSize = 0;
 
-      // Ensure output directory exists
-      if (!fs.existsSync(outputPath)) {
-        fs.mkdirSync(outputPath, { recursive: true });
-      }
+      res.on('data', (chunk) => {
+        downloadedSize += chunk.length;
+        if (progressCallback && totalSize) {
+          progressCallback((downloadedSize / totalSize) * 100);
+        }
+      });
 
-      const zip = new AdmZip(zipPath);
-      zip.extractAllTo(outputPath, true); // true = overwrite
-      resolve(true);
-    } catch (error) {
-      console.error('Extract failed:', error);
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve(true);
+      });
+      file.on('error', (e) => {
+        console.error(`File write error for ${outputPath}: ${e.message}`);
+        fs.unlink(outputPath, () => {});
+        resolve(false);
+      });
+    }).on('error', (e) => {
+      console.error(`Download network error: ${e.message}`);
       resolve(false);
-    }
+    });
+  } catch (e) {
+    console.error(`Download setup error: ${e.message}`);
+    resolve(false);
+  }
   });
 }
-

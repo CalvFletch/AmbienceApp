@@ -48,5 +48,8 @@ debug-preload.js
 *.psb
 icon.svg
 
+# Music upload scripts (contains credentials path)
+music_scripts/
+
 # Plan files
 plan.md

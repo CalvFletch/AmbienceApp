@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: file: https://raw.githubusercontent.com;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: file: https://raw.githubusercontent.com https://pub-8d3c3b52c11c464ba2e463fc91bbb7e7.r2.dev;">
   <title>Settings</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -824,12 +824,17 @@
     }
 
     .library-item.disabled {
-      opacity: 0.5;
+      opacity: 0.6;
       cursor: default;
     }
 
     .library-item.disabled:hover {
-      background-color: transparent;
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+    
+    .library-item.disabled .remove-btn {
+      pointer-events: auto;
+      cursor: pointer;
     }
 
     .library-item .checkbox-icon {
