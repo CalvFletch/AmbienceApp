@@ -33,11 +33,12 @@ Point the app to your music folder in Settings. Organize tracks into category fo
 Music/
   Skyrim/
     icon.png      <- optional category icon
-    Secunda.mp3
+    Secunda.mp4
   Oblivion/
     icon.png
-    Harvest Dawn.mp3
+    Harvest Dawn.mp4
 ```
+In addtion, note that the music files are mp4 format. This is to support the background styling of the app.
 
 ## Requirements
 
