@@ -60,6 +60,7 @@ let musicLibraryStatus = null;
 let selectedMusicCategories = [];
 let isDownloadingLibrary = false;
 let skipDeleteWarning = false;
+let isRemovingCategory = false;
 
 // Music library modal DOM
 const musicLibraryModal = document.getElementById('musicLibraryModal');
@@ -1163,14 +1164,25 @@ function closeMusicLibraryModal() {
 
 // Delete confirmation with "don't ask again" support
 async function confirmAndRemoveCategory(catName, catInfo, rowEl) {
+  // Prevent double-clicks
+  if (isRemovingCategory) {
+    console.log('Already removing a category, ignoring click');
+    return;
+  }
+  
   const doRemove = async () => {
-    const result = await window.electronAPI.removeLibraryCategory(catName);
-    if (result.success) {
-      // Refresh status and rebuild the library page
-      await loadMusicLibraryStatus();
-      renderLibraryPage();
-    } else {
-      alert('Failed to remove: ' + result.error);
+    isRemovingCategory = true;
+    try {
+      const result = await window.electronAPI.removeLibraryCategory(catName);
+      if (result.success) {
+        // Refresh status and rebuild the library page
+        await loadMusicLibraryStatus();
+        renderLibraryPage();
+      } else {
+        alert('Failed to remove: ' + result.error);
+      }
+    } finally {
+      isRemovingCategory = false;
     }
   };
 

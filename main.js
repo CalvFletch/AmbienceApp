@@ -2205,7 +2205,6 @@ ipcMain.handle('download-library-categories', async (event, options) => {
       // Get tracks for this category
       const categoryTracks = remoteManifest.tracks.filter(t => t.category === catSlug);
       if (categoryTracks.length === 0) {
-        console.warn(`No tracks found for category: ${categoryName}`);
         continue;
       }
       
@@ -2244,10 +2243,10 @@ ipcMain.handle('download-library-categories', async (event, options) => {
             total: tracksToDownload.length,
             current: downloaded
           });
-        } else {
-          console.warn(`Failed to download: ${track.filename}`);
         }
       }
+      
+      console.log(`[Download] Category "${categoryName}" complete: ${downloaded}/${tracksToDownload.length} tracks downloaded`);
 
       // Get category info from manifest
       const catInfo = remoteManifest.categories?.[catSlug] || {};
@@ -2303,10 +2302,39 @@ ipcMain.handle('download-library-categories', async (event, options) => {
     
     saveLocalManifest(finalManifest);
 
+    // Refresh music files and play from the first downloaded category
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('music-files-updated');
-      // Also try executeJavaScript as a fallback
-      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
+      const firstCategory = categories[0];
+      const firstCatSlug = firstCategory.toLowerCase().replace(/\s+/g, '-');
+      
+      await mainWindow.webContents.executeJavaScript(`
+        (async function() {
+          // Reload music files
+          const files = await window.electronAPI.getMusicFiles();
+          if (typeof musicFiles !== 'undefined') {
+            musicFiles = files;
+          }
+          
+          // Filter to tracks from the first downloaded category
+          const categorySlug = '${firstCatSlug}';
+          const categoryTracks = files.filter(f => {
+            const fSlug = (f.category || '').toLowerCase().replace(/\\s+/g, '-');
+            return fSlug === categorySlug;
+          });
+          
+          if (categoryTracks.length > 0) {
+            // Pick a random track from the category
+            const randomTrack = categoryTracks[Math.floor(Math.random() * categoryTracks.length)];
+            const index = files.indexOf(randomTrack);
+            
+            if (typeof shuffleMode !== 'undefined') shuffleMode = true;
+            if (typeof currentShufflePath !== 'undefined') currentShufflePath = ['${firstCategory}'];
+            if (typeof playTrack === 'function') {
+              playTrack(index);
+            }
+          }
+        })();
+      `).catch(() => {});
     }
 
     return { success: true, metadata: { installedCategories } };
@@ -2323,59 +2351,138 @@ ipcMain.handle('remove-library-category', async (event, categoryName) => {
       return { success: false, error: 'No category specified' };
     }
 
-    // Tell main window to release any files from this category
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('release-category-files', categoryName);
-      // Give renderer time to fully release file handles
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    // Get the category folder path
     const categoryFolder = path.join(musicFolder, categoryName);
+    let stoppedPlayback = false; // Track if we had to stop playback
     
-    // Delete the folder with retry (file handles may take time to release)
-    if (fs.existsSync(categoryFolder)) {
-      let attempts = 0;
-      const maxAttempts = 5;
-      while (attempts < maxAttempts) {
-        try {
-          fs.rmSync(categoryFolder, { recursive: true, force: true });
-          break; // Success
-        } catch (rmErr) {
-          attempts++;
-          if (attempts >= maxAttempts) {
-            throw rmErr; // Give up after max attempts
+    if (!fs.existsSync(categoryFolder)) {
+      // Already deleted, just update manifest
+      await updateManifestAfterRemoval(categoryName);
+      return { success: true };
+    }
+
+    // Step 1: Try to delete first without stopping playback
+    try {
+      fs.rmSync(categoryFolder, { recursive: true, force: true });
+    } catch (firstErr) {
+      if (firstErr.code !== 'EBUSY') {
+        throw firstErr; // Unknown error
+      }
+      
+      stoppedPlayback = true;
+      
+      // Step 2: File is busy - stop our playback completely
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        await mainWindow.webContents.executeJavaScript(`
+          (function() {
+            // Stop everything - go to idle state
+            const audioPlayer = document.getElementById('audioPlayer');
+            const bgVideo = document.getElementById('bgVideo');
+            
+            if (audioPlayer) {
+              audioPlayer.pause();
+              audioPlayer.removeAttribute('src');
+              audioPlayer.load();
+            }
+            if (bgVideo) {
+              bgVideo.pause();
+              bgVideo.removeAttribute('src');
+              bgVideo.load();
+            }
+            
+            // Clear state
+            if (typeof currentTrack !== 'undefined') currentTrack = null;
+            if (typeof currentIndex !== 'undefined') currentIndex = -1;
+            
+            // Update UI to idle state
+            const trackName = document.getElementById('trackName');
+            const categoryIcon = document.getElementById('currentCategoryIcon');
+            const playIcon = document.getElementById('playIcon');
+            const pauseIcon = document.getElementById('pauseIcon');
+            if (trackName) trackName.textContent = 'Removing...';
+            if (categoryIcon) categoryIcon.style.display = 'none';
+            if (playIcon) playIcon.classList.remove('hidden');
+            if (pauseIcon) pauseIcon.classList.add('hidden');
+          })();
+        `).catch(() => {});
+        
+        // Wait for file handles to release
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      // Step 3: Try to delete again
+      try {
+        fs.rmSync(categoryFolder, { recursive: true, force: true });
+      } catch (secondErr) {
+        if (secondErr.code !== 'EBUSY') {
+          throw secondErr;
+        }
+        
+        // Step 4: Still busy - another program has the lock
+        // Keep trying in a loop
+        
+        let deleted = false;
+        for (let i = 0; i < 10; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          if (!fs.existsSync(categoryFolder)) {
+            deleted = true;
+            break;
           }
-          // Wait longer between retries (200, 400, 600, 800ms)
-          await new Promise(resolve => setTimeout(resolve, attempts * 200));
+          
+          try {
+            fs.rmSync(categoryFolder, { recursive: true, force: true });
+            deleted = true;
+            break;
+          } catch (retryErr) {
+            // Keep trying
+          }
+        }
+        
+        if (!deleted) {
+          return { success: false, error: 'Files are in use by another program. Please close any programs using these files.' };
         }
       }
     }
 
-    // Update manifest
-    const localManifest = readLocalManifest();
-    if (localManifest && localManifest.installedCategories) {
-      if (localManifest.installedCategories[categoryName]) {
-        // Mark as not installed but keep the entry for optedOut tracking
-        localManifest.installedCategories[categoryName].installed = false;
-        localManifest.installedCategories[categoryName].optedOut = true;
-        localManifest.lastUpdated = new Date().toISOString();
-        
-        // Remove tracks for this category from manifest
-        if (localManifest.tracks) {
-          const catSlug = categoryName.toLowerCase().replace(/\s+/g, '-');
-          localManifest.tracks = localManifest.tracks.filter(t => t.category !== catSlug);
-        }
-        
-        saveLocalManifest(localManifest);
-      }
-    }
+    // Update manifest after successful deletion
+    await updateManifestAfterRemoval(categoryName);
 
-    // Notify main window to refresh music files
+    // Step 5: Refresh music files
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('music-files-updated');
-      // Also try executeJavaScript as a fallback
-      mainWindow.webContents.executeJavaScript('if(window.refreshMusicFiles) window.refreshMusicFiles()').catch(() => {});
+      // Only start new playback if we had to stop it
+      if (stoppedPlayback) {
+        // Use executeJavaScript to directly call the functions
+        await mainWindow.webContents.executeJavaScript(`
+          (async function() {
+            // Reload music files
+            const files = await window.electronAPI.getMusicFiles();
+            if (typeof musicFiles !== 'undefined') {
+              musicFiles = files;
+            }
+            // Shuffle to a new track if there are any
+            if (files && files.length > 0) {
+              const randomIndex = Math.floor(Math.random() * files.length);
+              const track = files[randomIndex];
+              
+              // Set state
+              if (typeof currentIndex !== 'undefined') currentIndex = randomIndex;
+              if (typeof shuffleMode !== 'undefined') shuffleMode = true;
+              if (typeof currentShufflePath !== 'undefined') currentShufflePath = [];
+              
+              // Play using playTrack if available
+              if (typeof playTrack === 'function') {
+                playTrack(randomIndex);
+              }
+            } else {
+              const trackName = document.getElementById('trackName');
+              if (trackName) trackName.textContent = 'No music found';
+            }
+          })();
+        `).catch(() => {});
+      } else {
+        // Just refresh the file list without interrupting playback
+        mainWindow.webContents.send('music-files-updated');
+      }
     }
 
     return { success: true };
@@ -2384,6 +2491,25 @@ ipcMain.handle('remove-library-category', async (event, categoryName) => {
     return { success: false, error: e.message };
   }
 });
+
+// Helper to update manifest after category removal
+async function updateManifestAfterRemoval(categoryName) {
+  const localManifest = readLocalManifest();
+  if (localManifest && localManifest.installedCategories) {
+    if (localManifest.installedCategories[categoryName]) {
+      localManifest.installedCategories[categoryName].installed = false;
+      localManifest.installedCategories[categoryName].optedOut = true;
+      localManifest.lastUpdated = new Date().toISOString();
+      
+      if (localManifest.tracks) {
+        const catSlug = categoryName.toLowerCase().replace(/\s+/g, '-');
+        localManifest.tracks = localManifest.tracks.filter(t => t.category !== catSlug);
+      }
+      
+      saveLocalManifest(localManifest);
+    }
+  }
+}
 
 // Helper: download file from URL (for R2 or any direct URL)
 function downloadFromUrl(url, outputPath, progressCallback) {

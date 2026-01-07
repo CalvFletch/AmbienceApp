@@ -765,14 +765,47 @@ function setupEventListeners() {
 
   // Listen for release-category-files (before category removal)
   window.electronAPI.onReleaseCategoryFiles((categoryName) => {
-    // If currently playing a track from this category (or subcategory), stop and release
-    if (currentTrack && currentTrack.category && 
-        (currentTrack.category === categoryName || currentTrack.category.startsWith(categoryName + ' / '))) {
-      audioPlayer.pause();
-      audioPlayer.src = '';
-      bgVideo.pause();
-      bgVideo.src = '';
-      currentTrack = null;
+    // Convert to slug for comparison (category in track is slug format)
+    const catSlug = categoryName.toLowerCase().replace(/\s+/g, '-');
+    
+    // Always release both players to be safe - they might have preloaded content
+    audioPlayer.pause();
+    audioPlayer.removeAttribute('src');
+    audioPlayer.load(); // Force release file handle
+    
+    bgVideo.pause();
+    bgVideo.removeAttribute('src');
+    bgVideo.load(); // Force release file handle
+    
+    // Check if currently playing a track from this category
+    if (currentTrack && currentTrack.category) {
+      const trackCatSlug = currentTrack.category.toLowerCase().replace(/\s+/g, '-');
+      if (trackCatSlug === catSlug || trackCatSlug.startsWith(catSlug + '-')) {
+        currentTrack = null;
+        currentIndex = -1;
+        
+        // Find a track from a different category to play
+        const otherTracks = musicFiles.filter(f => {
+          const fCatSlug = (f.category || '').toLowerCase().replace(/\s+/g, '-');
+          return fCatSlug !== catSlug && !fCatSlug.startsWith(catSlug + '-');
+        });
+        
+        if (otherTracks.length > 0) {
+          // Play a random track from another category
+          const randomTrack = otherTracks[Math.floor(Math.random() * otherTracks.length)];
+          const newIndex = musicFiles.indexOf(randomTrack);
+          currentIndex = newIndex;
+          shuffleMode = false;
+          currentShufflePath = [];
+          loadCurrentTrack();
+        } else {
+          // No other tracks available - go to "no tracks" state
+          trackName.textContent = 'No music found';
+          currentCategoryIcon.style.display = 'none';
+          playIcon.classList.remove('hidden');
+          pauseIcon.classList.add('hidden');
+        }
+      }
     }
   });
 
