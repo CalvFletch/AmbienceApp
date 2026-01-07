@@ -10,7 +10,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
   loadSettings: () => ipcRenderer.invoke('load-settings'),
   checkAudioActivity: (deviceName) => ipcRenderer.invoke('check-audio-activity', deviceName),
-  openDevicesWindow: () => ipcRenderer.send('open-devices-window'),
   openSettingsWindow: () => ipcRenderer.send('open-settings-window'),
   openSettingsLibrary: () => ipcRenderer.send('open-settings-library'),
   openDebugWindow: () => ipcRenderer.send('open-debug-window'),

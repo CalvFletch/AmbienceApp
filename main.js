@@ -13,7 +13,6 @@ const CURRENT_VERSION = require('./package.json').version;
 const IS_DEV = !app.isPackaged;
 
 let mainWindow;
-let devicesWindow;
 let settingsWindow;
 let debugWindow;
 let musicFolder = null;
@@ -414,60 +413,6 @@ async function applyIconFallbacks(name, baseResult) {
   return baseResult;
 }
 
-function createDevicesWindow() {
-  if (devicesWindow) {
-    devicesWindow.show();
-    devicesWindow.focus();
-    return;
-  }
-
-  const width = 350;
-  const height = 400;
-  let x;
-  let y;
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const bounds = mainWindow.getBounds();
-    x = Math.round(bounds.x + (bounds.width - width) / 2);
-    y = Math.round(bounds.y + (bounds.height - height) / 2);
-  }
-
-  devicesWindow = new BrowserWindow({
-    width,
-    height,
-    x,
-    y,
-    parent: mainWindow,
-    modal: false,
-    frame: false,
-    transparent: true,
-    resizable: false,
-    skipTaskbar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      preload: getAppPath('devices-preload.js')
-    }
-  });
-
-  devicesWindow.loadFile(getAppPath('devices.html'));
-
-  devicesWindow.on('closed', () => {
-    devicesWindow = null;
-  });
-
-  devicesWindow.on('blur', () => {
-    if (devicesWindow) {
-      devicesWindow.close();
-    }
-  });
-
-  if (mainWindow) {
-    mainWindow.on('moved', () => {
-      if (devicesWindow) devicesWindow.close();
-    });
-  }
-}
-
 function createSettingsWindow() {
   if (settingsWindow) {
     settingsWindow.show();
@@ -648,7 +593,6 @@ app.on('activate', () => {
 ipcMain.on('debug-log', (event, msg) => {
   console.log('[settings]', msg);
 });
-ipcMain.on('open-devices-window', createDevicesWindow);
 ipcMain.on('open-settings-window', createSettingsWindow);
 ipcMain.on('open-settings-library', () => {
   createSettingsWindow();
@@ -661,12 +605,6 @@ ipcMain.on('open-settings-library', () => {
     if (!settingsWindow.webContents.isLoading()) {
       settingsWindow.webContents.send('open-library-modal');
     }
-  }
-});
-
-ipcMain.on('close-devices-window', () => {
-  if (devicesWindow) {
-    devicesWindow.close();
   }
 });
 
@@ -903,37 +841,6 @@ ipcMain.on('save-settings-from-window', (event, settings) => {
   }
 });
 
-ipcMain.handle('get-initial-devices-state', async () => {
-  const config = loadConfigData();
-  const selectedDevices = config.duckDevices || [];
-
-  const ready = await ensureAudioCheck();
-  if (!ready) {
-    return { allDevices: [], selectedDevices };
-  }
-
-  const { exePath } = getAudioCheckPaths();
-
-  const allDevices = await new Promise((resolve) => {
-    exec(`"${exePath}" --list`, { timeout: 5000 }, (error, stdout) => {
-      if (error) {
-        console.error('Error getting audio devices:', error);
-        resolve([]);
-        return;
-      }
-      const devices = stdout.trim().split('\n').filter(d => d.trim()).map(d => d.trim());
-      resolve(devices);
-    });
-  });
-
-  return { allDevices, selectedDevices };
-});
-
-ipcMain.on('update-duck-devices', (event, devices) => {
-  if (mainWindow) {
-    mainWindow.webContents.send('on-duck-devices-updated', devices);
-  }
-});
 ipcMain.handle('get-music-files', async () => {
   try {
     // Use preview folder if set, otherwise use saved musicFolder
