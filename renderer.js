@@ -305,12 +305,16 @@ async function loadSettings() {
     currentVolume = settings.volume;
     volumeSlider.value = settings.volume * 100;
   }
-  if (settings.duckingEnabled) {
+  if (settings.duckingEnabled !== undefined) {
     duckingEnabled = settings.duckingEnabled;
-    if (duckingEnabled) {
-      duckIconOn.classList.remove('hidden');
-      duckIconOff.classList.add('hidden');
-    }
+  }
+  // Update UI to match current state
+  if (duckingEnabled) {
+    duckIconOn.classList.remove('hidden');
+    duckIconOff.classList.add('hidden');
+  } else {
+    duckIconOn.classList.add('hidden');
+    duckIconOff.classList.remove('hidden');
   }
 }
 
