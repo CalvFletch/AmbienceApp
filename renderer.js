@@ -44,11 +44,14 @@ function dlog(msg, type = '') {
   debugLog.scrollTop = debugLog.scrollHeight;
 }
 
-document.addEventListener('keydown', (e) => {
+document.addEventListener('keydown', async (e) => {
   if (e.ctrlKey && e.key === 'd') {
     e.preventDefault();
-    // Open debug window instead of inline panel
-    window.electronAPI.openDebugWindow();
+    // Only open debug window in dev mode
+    const isDev = await window.electronAPI.isDevMode();
+    if (isDev) {
+      window.electronAPI.openDebugWindow();
+    }
   }
 });
 

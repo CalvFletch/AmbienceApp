@@ -1,6 +1,6 @@
 {
   "name": "ambience-app",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Ambient music player with auto-ducking",
   "main": "main.js",
   "scripts": {

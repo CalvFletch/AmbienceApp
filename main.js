@@ -10,6 +10,9 @@ const GITHUB_REPO = 'CalvFletch/AmbienceApp';
 const MUSIC_LIBRARY_REPO = 'CalvFletch/AmbienceApp-MusicLibrary';
 const CURRENT_VERSION = require('./package.json').version;
 
+// Dev mode check - only enable debug features when running unpackaged
+const IS_DEV = !app.isPackaged;
+
 let mainWindow;
 let devicesWindow;
 let settingsWindow;
@@ -680,8 +683,15 @@ ipcMain.on('close-settings-window', () => {
   }
 });
 
-// Debug window handlers
-ipcMain.on('open-debug-window', createDebugWindow);
+// Debug window handlers (only available in dev mode)
+ipcMain.on('open-debug-window', () => {
+  if (IS_DEV) {
+    createDebugWindow();
+  }
+});
+
+// Expose dev mode check to renderer
+ipcMain.handle('is-dev-mode', () => IS_DEV);
 
 ipcMain.handle('close-debug-window', async () => {
   if (debugWindow) {

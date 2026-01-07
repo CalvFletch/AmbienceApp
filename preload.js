@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openSettingsWindow: () => ipcRenderer.send('open-settings-window'),
   openSettingsLibrary: () => ipcRenderer.send('open-settings-library'),
   openDebugWindow: () => ipcRenderer.send('open-debug-window'),
+  isDevMode: () => ipcRenderer.invoke('is-dev-mode'),
   onDuckDevicesUpdated: (callback) => ipcRenderer.on('on-duck-devices-updated', (event, ...args) => callback(...args)),
   onSettingsUpdated: (callback) => ipcRenderer.on('on-settings-updated', (event, ...args) => callback(...args)),
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
