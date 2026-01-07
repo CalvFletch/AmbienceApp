@@ -4,13 +4,16 @@ const fs = require('fs');
 const { exec, execFile } = require('child_process');
 const https = require('https');
 const os = require('os');
+const AdmZip = require('adm-zip');
 
 const GITHUB_REPO = 'CalvFletch/AmbienceApp';
+const MUSIC_LIBRARY_REPO = 'CalvFletch/AmbienceApp-MusicLibrary';
 const CURRENT_VERSION = require('./package.json').version;
 
 let mainWindow;
 let devicesWindow;
 let settingsWindow;
+let debugWindow;
 let musicFolder = null;
 let configPath = null;
 let processListCache = { data: null, fetchedAt: 0, fetching: null };
@@ -28,6 +31,12 @@ let libraryMetadataCache = null;
 let libraryMetadataCacheTime = 0;
 const LIBRARY_METADATA_CACHE_TTL = 3600000; // 1 hour
 const LIBRARY_METADATA_FILENAME = 'library-metadata.json';
+
+// GitHub releases cache (24 hours)
+let releasesCache = null;
+let releasesCacheTime = 0;
+const RELEASES_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const RELEASES_CACHE_FILENAME = 'releases-cache.json';
 
 function resetCaches() {
   exeIconCache = new Map();
@@ -188,8 +197,8 @@ function saveConfig(update = {}) {
 
 function initPaths() {
   ensureConfigPath();
-  const userDataPath = app.getPath('userData');
-  const defaultMusicFolder = path.join(userDataPath, 'music');
+  const userMusicPath = app.getPath('music');
+  const defaultMusicFolder = path.join(userMusicPath, 'Ambience');
   const config = loadConfigData();
   musicFolder = config.musicFolder || defaultMusicFolder;
   if (!config.musicFolder) {
@@ -519,6 +528,53 @@ function createSettingsWindow() {
   });
 }
 
+function createDebugWindow() {
+  if (debugWindow) {
+    debugWindow.show();
+    debugWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const mainBounds = mainWindow.getBounds();
+  const display = screen.getDisplayNearestPoint({ x: mainBounds.x, y: mainBounds.y });
+
+  const debugWidth = 650;
+  const debugHeight = 500;
+  const centerX = Math.round(display.bounds.x + (display.bounds.width - debugWidth) / 2);
+  const centerY = Math.round(display.bounds.y + (display.bounds.height - debugHeight) / 2);
+
+  debugWindow = new BrowserWindow({
+    width: debugWidth,
+    height: debugHeight,
+    x: centerX,
+    y: centerY,
+    parent: mainWindow,
+    modal: false,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#66000000',
+    backgroundMaterial: process.platform === 'win32' ? 'acrylic' : undefined,
+    resizable: true,
+    skipTaskbar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: getAppPath('debug-preload.js')
+    }
+  });
+
+  if (debugWindow.setBackgroundMaterial && process.platform === 'win32') {
+    debugWindow.setBackgroundMaterial('acrylic');
+  }
+
+  debugWindow.loadFile(getAppPath('debug.html'));
+
+  debugWindow.on('closed', () => {
+    debugWindow = null;
+  });
+}
+
 function createWindow() {
   const config = loadConfigData();
 
@@ -578,6 +634,7 @@ app.whenReady().then(() => {
   ensureAudioCheck();
 
   createWindow();
+  // Music library prompt is now handled by the renderer via in-app notification banner
 });
 
 app.on('window-all-closed', () => {
@@ -597,6 +654,19 @@ ipcMain.on('debug-log', (event, msg) => {
 });
 ipcMain.on('open-devices-window', createDevicesWindow);
 ipcMain.on('open-settings-window', createSettingsWindow);
+ipcMain.on('open-settings-library', () => {
+  createSettingsWindow();
+  // Send message to settings window to open library modal after it loads
+  if (settingsWindow) {
+    settingsWindow.webContents.once('did-finish-load', () => {
+      settingsWindow.webContents.send('open-library-modal');
+    });
+    // If already loaded, send immediately
+    if (!settingsWindow.webContents.isLoading()) {
+      settingsWindow.webContents.send('open-library-modal');
+    }
+  }
+});
 
 ipcMain.on('close-devices-window', () => {
   if (devicesWindow) {
@@ -609,6 +679,105 @@ ipcMain.on('close-settings-window', () => {
     settingsWindow.hide();
   }
 });
+
+// Debug window handlers
+ipcMain.on('open-debug-window', createDebugWindow);
+
+ipcMain.handle('close-debug-window', async () => {
+  if (debugWindow) {
+    debugWindow.close();
+  }
+});
+
+ipcMain.handle('debug-trigger-update', async () => {
+  // Send a fake update notification to main window
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-show-update', {
+      version: '99.99.99',
+      releaseUrl: 'https://github.com/CalvFletch/AmbienceApp/releases/tag/v99.99.99'
+    });
+  }
+  return { version: '99.99.99' };
+});
+
+ipcMain.handle('debug-trigger-library', async () => {
+  // Send library notification to main window
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-show-library');
+  }
+});
+
+ipcMain.handle('debug-hide-update', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-hide-update');
+  }
+});
+
+ipcMain.handle('debug-simulate-duck', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-duck');
+  }
+});
+
+ipcMain.handle('debug-simulate-unduck', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-unduck');
+  }
+});
+
+ipcMain.handle('debug-force-play', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-force-play');
+  }
+});
+
+ipcMain.handle('debug-force-pause', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-force-pause');
+  }
+});
+
+ipcMain.handle('debug-force-skip', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('debug-force-skip');
+  }
+});
+
+ipcMain.handle('debug-music-info', async () => {
+  const files = await getMusicFiles();
+  const categories = [...new Set(files.map(f => f.category).filter(Boolean))];
+  return {
+    folder: musicFolder,
+    totalFiles: files.length,
+    categories: categories
+  };
+});
+
+ipcMain.handle('debug-get-config', async () => {
+  return loadConfigData();
+});
+
+ipcMain.handle('debug-clear-dismissed-update', async () => {
+  saveConfig({ dismissedUpdateVersion: null });
+});
+
+ipcMain.handle('debug-clear-library-prompt', async () => {
+  saveConfig({ dismissedLibraryPrompt: false });
+});
+
+// Function to send status updates to debug window
+function sendDebugStatus(status) {
+  if (debugWindow && !debugWindow.isDestroyed()) {
+    debugWindow.webContents.send('debug-status-update', status);
+  }
+}
+
+// Function to send log messages to debug window
+function sendDebugLog(msg, type = 'info') {
+  if (debugWindow && !debugWindow.isDestroyed()) {
+    debugWindow.webContents.send('debug-log-message', msg, type);
+  }
+}
 
 ipcMain.handle('get-settings-state', async () => {
   const config = loadConfigData();
@@ -650,6 +819,12 @@ ipcMain.handle('get-audio-devices', async () => {
   }
 
   return { devices: freshDevices, fromCache: false };
+});
+
+ipcMain.handle('open-external-url', async (event, url) => {
+  if (url && typeof url === 'string') {
+    shell.openExternal(url);
+  }
 });
 
 ipcMain.handle('browse-for-exe', async () => {
@@ -736,8 +911,11 @@ ipcMain.on('update-duck-devices', (event, devices) => {
 });
 ipcMain.handle('get-music-files', async () => {
   try {
-    if (!fs.existsSync(musicFolder)) {
-      fs.mkdirSync(musicFolder, { recursive: true });
+    // Use preview folder if set, otherwise use saved musicFolder
+    const folderToUse = previewMusicFolder || musicFolder;
+    
+    if (!fs.existsSync(folderToUse)) {
+      fs.mkdirSync(folderToUse, { recursive: true });
     }
 
     const audioExtensions = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.mp4', '.webm', '.mkv'];
@@ -749,7 +927,7 @@ ipcMain.handle('get-music-files', async () => {
 
         let topLevelIconPath = null;
         if (categoryParts.length > 0) {
-          const topLevelCategoryDir = path.join(musicFolder, categoryParts[0]);
+          const topLevelCategoryDir = path.join(folderToUse, categoryParts[0]);
           const topLevelIcon = path.join(topLevelCategoryDir, 'icon.png');
           if (fs.existsSync(topLevelIcon)) {
             topLevelIconPath = topLevelIcon;
@@ -781,7 +959,7 @@ ipcMain.handle('get-music-files', async () => {
       }
     }
 
-    findMusicFiles(musicFolder);
+    findMusicFiles(folderToUse);
     return allAudioFiles;
 
   } catch (error) {
@@ -817,6 +995,106 @@ ipcMain.handle('select-music-folder', async () => {
     return musicFolder;
   }
   return null;
+});
+
+ipcMain.handle('save-music-folder', async (event, folderPath) => {
+  try {
+    // Check if path looks like a valid path
+    if (!folderPath || folderPath.trim() === '') {
+      return { success: false, error: 'PLEASE ENTER A FOLDER PATH' };
+    }
+    
+    const normalizedPath = path.resolve(folderPath);
+    
+    // Check if drive letter exists (Windows)
+    if (process.platform === 'win32') {
+      const driveLetter = normalizedPath.charAt(0).toUpperCase();
+      if (/^[A-Z]$/.test(driveLetter)) {
+        const driveRoot = driveLetter + ':\\';
+        if (!fs.existsSync(driveRoot)) {
+          return { success: false, error: `DRIVE ${driveLetter}: DOES NOT EXIST` };
+        }
+      }
+    }
+    
+    // Try to create directory if it doesn't exist
+    try {
+      if (!fs.existsSync(normalizedPath)) {
+        fs.mkdirSync(normalizedPath, { recursive: true });
+      }
+    } catch (mkdirErr) {
+      console.error('mkdir error:', mkdirErr);
+      return { success: false, error: 'CANNOT CREATE FOLDER - CHECK PERMISSIONS' };
+    }
+    
+    // Test write access by creating a temp file
+    const testFile = path.join(normalizedPath, '.ambience-test');
+    try {
+      fs.writeFileSync(testFile, '');
+      fs.unlinkSync(testFile);
+    } catch (accessErr) {
+      console.error('access test error:', accessErr);
+      return { success: false, error: 'ACCESS DENIED - CHECK FOLDER PERMISSIONS' };
+    }
+    
+    // All good - save and update
+    musicFolder = normalizedPath;
+    saveConfig();
+    
+    // Notify main window to refresh music files
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('music-files-updated');
+    }
+    
+    return { success: true };
+  } catch (err) {
+    console.error('save-music-folder error:', err);
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      return { success: false, error: 'ACCESS DENIED - CHECK FOLDER PERMISSIONS' };
+    }
+    if (err.code === 'ENOENT') {
+      return { success: false, error: 'INVALID PATH - PARENT FOLDER DOES NOT EXIST' };
+    }
+    return { success: false, error: 'INVALID PATH OR PERMISSION ERROR' };
+  }
+});
+
+// Preview music folder - validates and updates main window without saving to config
+// This temporarily changes the music folder so the main window loads music from the new path
+let previewMusicFolder = null;
+
+ipcMain.handle('preview-music-folder', async (event, folderPath) => {
+  try {
+    if (!folderPath || folderPath.trim() === '') {
+      return { success: false, error: '' };
+    }
+    
+    const normalizedPath = path.resolve(folderPath);
+    
+    // Check if folder exists
+    if (!fs.existsSync(normalizedPath)) {
+      return { success: false, error: 'FOLDER DOES NOT EXIST' };
+    }
+    
+    // Check if it's a directory
+    const stats = fs.statSync(normalizedPath);
+    if (!stats.isDirectory()) {
+      return { success: false, error: 'PATH IS NOT A FOLDER' };
+    }
+    
+    // Set preview folder - getMusicFiles will use this temporarily
+    previewMusicFolder = normalizedPath;
+    
+    // Notify main window to refresh music files with new path
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('music-files-updated');
+    }
+    
+    return { success: true };
+  } catch (err) {
+    console.error('preview-music-folder error:', err);
+    return { success: false, error: 'ERROR CHECKING FOLDER' };
+  }
 });
 
 ipcMain.handle('get-music-folder-path', () => {
@@ -930,12 +1208,28 @@ class Program {
 
     [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IAudioSessionControl {
-        int unk1(); int unk2(); int unk3(); int unk4(); int unk5(); int unk6(); int unk7(); int unk8();
+        int GetState(out int state);
+        int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string Value, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string Value, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        int GetGroupingParam(out Guid pRetVal);
+        int SetGroupingParam([MarshalAs(UnmanagedType.LPStruct)] Guid Override, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        int RegisterAudioSessionNotification(IntPtr NewNotifications);
+        int UnregisterAudioSessionNotification(IntPtr NewNotifications);
     }
 
     [Guid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IAudioSessionControl2 : IAudioSessionControl {
-        new int unk1(); new int unk2(); new int unk3(); new int unk4(); new int unk5(); new int unk6(); new int unk7(); new int unk8();
+        new int GetState(out int state);
+        new int GetDisplayName([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        new int SetDisplayName([MarshalAs(UnmanagedType.LPWStr)] string Value, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        new int GetIconPath([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
+        new int SetIconPath([MarshalAs(UnmanagedType.LPWStr)] string Value, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        new int GetGroupingParam(out Guid pRetVal);
+        new int SetGroupingParam([MarshalAs(UnmanagedType.LPStruct)] Guid Override, [MarshalAs(UnmanagedType.LPStruct)] Guid EventContext);
+        new int RegisterAudioSessionNotification(IntPtr NewNotifications);
+        new int UnregisterAudioSessionNotification(IntPtr NewNotifications);
         int GetSessionIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
         int GetSessionInstanceIdentifier([MarshalAs(UnmanagedType.LPWStr)] out string pRetVal);
         int GetProcessId(out uint pRetVal);
@@ -1024,25 +1318,33 @@ class Program {
         var result = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try {
-            IMMDevice defDevice;
-            enumerator.GetDefaultAudioEndpoint(0, 1, out defDevice);
-            object mgrObj; Guid iid = IID_IAudioSessionManager2;
-            defDevice.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
-            var mgr = (IAudioSessionManager2)mgrObj;
-            IAudioSessionEnumerator sessionEnum;
-            mgr.GetSessionEnumerator(out sessionEnum);
-            int count; sessionEnum.GetCount(out count);
-            for (int i = 0; i < count; i++) {
+            // Check ALL audio devices, not just default
+            IMMDeviceCollection devices;
+            enumerator.EnumAudioEndpoints(0, 1, out devices); // 0 = eRender, 1 = DEVICE_STATE_ACTIVE
+            int deviceCount; devices.GetCount(out deviceCount);
+
+            for (int d = 0; d < deviceCount; d++) {
                 try {
-                    IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
-                    var ctrl2 = (IAudioSessionControl2)ctrl;
-                    uint pid; ctrl2.GetProcessId(out pid);
-                    if (pid == 0) continue;
-                    var proc = Process.GetProcessById((int)pid);
-                    string exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
-                    if (!seen.Contains(exeName)) {
-                        seen.Add(exeName);
-                        result.Add(exeName);
+                    IMMDevice device; devices.Item(d, out device);
+                    object mgrObj; Guid iid = IID_IAudioSessionManager2;
+                    device.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
+                    var mgr = (IAudioSessionManager2)mgrObj;
+                    IAudioSessionEnumerator sessionEnum;
+                    mgr.GetSessionEnumerator(out sessionEnum);
+                    int count; sessionEnum.GetCount(out count);
+                    for (int i = 0; i < count; i++) {
+                        try {
+                            IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
+                            var ctrl2 = (IAudioSessionControl2)ctrl;
+                            uint pid; ctrl2.GetProcessId(out pid);
+                            if (pid == 0) continue;
+                            var proc = Process.GetProcessById((int)pid);
+                            string exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
+                            if (!seen.Contains(exeName)) {
+                                seen.Add(exeName);
+                                result.Add(exeName);
+                            }
+                        } catch {}
                     }
                 } catch {}
             }
@@ -1053,33 +1355,48 @@ class Program {
     static float CheckExeAudio(IMMDeviceEnumerator enumerator, HashSet<string> targetExes) {
         float maxPeak = 0;
         try {
-            IMMDevice defDevice;
-            enumerator.GetDefaultAudioEndpoint(0, 1, out defDevice);
-            object mgrObj; Guid iid = IID_IAudioSessionManager2;
-            defDevice.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
-            var mgr = (IAudioSessionManager2)mgrObj;
-            IAudioSessionEnumerator sessionEnum;
-            mgr.GetSessionEnumerator(out sessionEnum);
-            int count; sessionEnum.GetCount(out count);
-            for (int i = 0; i < count; i++) {
+            // Check all render endpoints, not just default
+            IMMDeviceCollection devices;
+            enumerator.EnumAudioEndpoints(0, 1, out devices); // 0 = eRender, 1 = DEVICE_STATE_ACTIVE
+            int deviceCount; devices.GetCount(out deviceCount);
+
+            for (int d = 0; d < deviceCount; d++) {
                 try {
-                    IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
-                    var ctrl2 = (IAudioSessionControl2)ctrl;
-                    uint pid; ctrl2.GetProcessId(out pid);
-                    if (pid == 0) continue;
-                    var proc = Process.GetProcessById((int)pid);
-                    string exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
-                    if (targetExes.Contains(exeName)) {
-                        // Get meter for this session
-                        object meterObj; Guid meterId = IID_IAudioMeterInformation;
+                    IMMDevice device; devices.Item(d, out device);
+                    object mgrObj; Guid iid = IID_IAudioSessionManager2;
+                    device.Activate(ref iid, 1, IntPtr.Zero, out mgrObj);
+                    var mgr = (IAudioSessionManager2)mgrObj;
+                    IAudioSessionEnumerator sessionEnum;
+                    mgr.GetSessionEnumerator(out sessionEnum);
+                    int count; sessionEnum.GetCount(out count);
+
+                    for (int i = 0; i < count; i++) {
                         try {
-                            ((IMMDevice)defDevice).Activate(ref meterId, 1, IntPtr.Zero, out meterObj);
-                            // Note: This gets device peak, not per-session. For true per-session we need IAudioMeterInformation from session
-                            // But sessions don't directly expose meter. We check if process is in audio session as proxy.
-                            var meter = meterObj as IAudioMeterInformation;
-                            if (meter != null) {
-                                float peak; meter.GetPeakValue(out peak);
-                                if (peak > maxPeak) maxPeak = peak;
+                            IAudioSessionControl ctrl; sessionEnum.GetSession(i, out ctrl);
+                            var ctrl2 = (IAudioSessionControl2)ctrl;
+                            uint pid; ctrl2.GetProcessId(out pid);
+                            if (pid == 0) continue;
+
+                            string exeName;
+                            try {
+                                var proc = Process.GetProcessById((int)pid);
+                                exeName = proc.ProcessName.ToLowerInvariant() + ".exe";
+                            } catch { continue; }
+
+                            if (targetExes.Contains(exeName)) {
+                                // Try to get meter via QueryInterface
+                                IntPtr pUnk = Marshal.GetIUnknownForObject(ctrl);
+                                IntPtr pMeter = IntPtr.Zero;
+                                Guid meterGuid = IID_IAudioMeterInformation;
+                                int hr = Marshal.QueryInterface(pUnk, ref meterGuid, out pMeter);
+                                Marshal.Release(pUnk);
+
+                                if (hr == 0 && pMeter != IntPtr.Zero) {
+                                    var meter = (IAudioMeterInformation)Marshal.GetObjectForIUnknown(pMeter);
+                                    Marshal.Release(pMeter);
+                                    float peak; meter.GetPeakValue(out peak);
+                                    if (peak > maxPeak) maxPeak = peak;
+                                }
                             }
                         } catch {}
                     }
@@ -1093,7 +1410,7 @@ class Program {
 
 // Write and compile the C# helper on first run
 // Version is used to force recompile when source changes
-const AUDIO_CHECK_VERSION = '3';
+const AUDIO_CHECK_VERSION = '7';
 let audioCheckReady = false;
 
 function ensureAudioCheck() {
@@ -1348,7 +1665,9 @@ ipcMain.handle('check-for-updates', async () => {
     const options = {
       hostname: 'api.github.com',
       path: `/repos/${GITHUB_REPO}/releases/latest`,
-      headers: { 'User-Agent': 'AmbienceApp' }
+      headers: {
+        'User-Agent': 'AmbienceApp'
+      }
     };
 
     https.get(options, (res) => {
@@ -1363,7 +1682,7 @@ ipcMain.handle('check-for-updates', async () => {
             hasUpdate,
             currentVersion: CURRENT_VERSION,
             latestVersion,
-            releaseUrl: release.html_url || `https://github.com/${GITHUB_REPO}/releases`
+            releaseUrl: release.html_url || `https://github.com/${GITHUB_REPO}/releases/tag/v${latestVersion}`
           });
         } catch (e) {
           resolve({ hasUpdate: false, error: 'Failed to parse response' });
@@ -1436,13 +1755,47 @@ function writeLibraryMetadata(metadata) {
   }
 }
 
-// Fetch all music-lib-* releases from GitHub
-function fetchMusicLibraryReleases() {
+// Fetch all releases from music library repo (per-category releases)
+// Load releases cache from disk
+function loadReleasesCache() {
+  try {
+    const cachePath = path.join(musicFolder, RELEASES_CACHE_FILENAME);
+    if (fs.existsSync(cachePath)) {
+      const cacheData = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+      if (cacheData.releases && cacheData.timestamp) {
+        releasesCache = cacheData.releases;
+        releasesCacheTime = cacheData.timestamp;
+        return true;
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load releases cache:', e);
+  }
+  return false;
+}
+
+// Save releases cache to disk
+function saveReleasesCache(releases) {
+  try {
+    const cachePath = path.join(musicFolder, RELEASES_CACHE_FILENAME);
+    fs.writeFileSync(cachePath, JSON.stringify({
+      releases: releases,
+      timestamp: Date.now()
+    }, null, 2));
+  } catch (e) {
+    console.error('Failed to save releases cache:', e);
+  }
+}
+
+// Fetch releases from GitHub API (no caching)
+function fetchReleasesFromAPI() {
   return new Promise((resolve) => {
     const options = {
       hostname: 'api.github.com',
-      path: `/repos/${GITHUB_REPO}/releases`,
-      headers: { 'User-Agent': 'AmbienceApp' }
+      path: `/repos/${MUSIC_LIBRARY_REPO}/releases`,
+      headers: {
+        'User-Agent': 'AmbienceApp'
+      }
     };
 
     https.get(options, (res) => {
@@ -1451,79 +1804,129 @@ function fetchMusicLibraryReleases() {
       res.on('end', () => {
         try {
           const releases = JSON.parse(data);
-          // Filter for music-lib-* releases and sort by creation date descending
-          const musicReleases = releases
-            .filter(r => r.tag_name && r.tag_name.startsWith('music-lib-'))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-          resolve(musicReleases);
+          // Ensure we got an array (API might return error object on rate limit, etc.)
+          if (!Array.isArray(releases)) {
+            console.error('GitHub API returned non-array:', releases.message || releases);
+            resolve(null);
+            return;
+          }
+          resolve(releases);
         } catch (e) {
           console.error('Failed to parse releases:', e);
-          resolve([]);
-        }
-      });
-    }).on('error', (e) => {
-      console.error('Failed to fetch releases:', e);
-      resolve([]);
-    });
-  });
-}
-
-// Parse metadata from a release's music-lib-metadata.json asset
-function extractMetadataFromRelease(release) {
-  const metadataAsset = release.assets?.find(a => a.name === 'music-lib-metadata.json');
-  if (!metadataAsset) return null;
-
-  return new Promise((resolve) => {
-    const options = {
-      hostname: 'api.github.com',
-      path: `/repos/${GITHUB_REPO}/releases/assets/${metadataAsset.id}`,
-      headers: { 
-        'User-Agent': 'AmbienceApp',
-        'Accept': 'application/octet-stream'
-      }
-    };
-
-    https.get(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const metadata = JSON.parse(data);
-          metadata.releaseTag = release.tag_name;
-          metadata.releaseUrl = release.html_url;
-          resolve(metadata);
-        } catch (e) {
-          console.error('Failed to parse release metadata:', e);
           resolve(null);
         }
       });
     }).on('error', (e) => {
-      console.error('Failed to fetch release metadata:', e);
+      console.error('Failed to fetch releases:', e);
       resolve(null);
     });
   });
 }
 
-// Build available categories from all releases
+// Fetch releases with 24-hour caching
+async function fetchMusicLibraryReleases(forceRefresh = false) {
+  const now = Date.now();
+  
+  // Try to load from disk cache if not in memory
+  if (!releasesCache) {
+    loadReleasesCache();
+  }
+  
+  // Check if cache is still valid (24 hours)
+  if (!forceRefresh && releasesCache && (now - releasesCacheTime) < RELEASES_CACHE_TTL) {
+    console.log('Using cached releases (expires in', Math.round((RELEASES_CACHE_TTL - (now - releasesCacheTime)) / 3600000), 'hours)');
+    return releasesCache;
+  }
+  
+  // Fetch fresh data from API
+  console.log('Fetching fresh releases from GitHub API...');
+  const releases = await fetchReleasesFromAPI();
+  
+  if (releases) {
+    // Update cache
+    releasesCache = releases;
+    releasesCacheTime = now;
+    saveReleasesCache(releases);
+    return releases;
+  }
+  
+  // If API failed but we have stale cache, use it
+  if (releasesCache) {
+    console.log('API failed, using stale cache');
+    return releasesCache;
+  }
+  
+  return [];
+}
+
+// Parse category info from release (tag format: category-version, e.g., skyrim-1.0.0)
+function parseCategoryFromRelease(release) {
+  if (!release.tag_name) return null;
+  
+  // Tag format: category-name-version (e.g., skyrim-1.0.0, star-wars-1.0.0)
+  const tagParts = release.tag_name.split('-');
+  if (tagParts.length < 2) return null;
+  
+  // Version is always the last part
+  const version = tagParts.pop();
+  // Category name is everything before version (rejoined with spaces, title case)
+  const categorySlug = tagParts.join('-');
+  const categoryName = categorySlug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  
+  // Get archive names from release assets
+  // Support both single .zip and split files (.zip.001, .zip.002, etc.)
+  const archiveNames = (release.assets || [])
+    .filter(a => a.name.endsWith('.zip') || /\.zip\.\d{3}$/.test(a.name))
+    .map(a => a.name)
+    .sort(); // Ensure parts are in order
+  
+  // Parse release notes for metadata (songCount and totalSize)
+  let songCount = 0;
+  let totalSize = 0;
+  const body = release.body || '';
+  const songMatch = body.match(/songCount:\s*(\d+)/i);
+  const sizeMatch = body.match(/totalSize:\s*(\d+)/i);
+  if (songMatch) songCount = parseInt(songMatch[1], 10);
+  if (sizeMatch) totalSize = parseInt(sizeMatch[1], 10);
+  
+  return {
+    name: categoryName,
+    slug: categorySlug,
+    version: version,
+    releaseTag: release.tag_name,
+    releaseUrl: release.html_url,
+    archiveNames: archiveNames,
+    songCount: songCount,
+    totalSize: totalSize
+  };
+}
+
+// Build available categories from all releases (each release = one category)
 async function buildAvailableCategoriesMap() {
   const releases = await fetchMusicLibraryReleases();
-  if (releases.length === 0) return {};
+  if (!Array.isArray(releases) || releases.length === 0) return {};
 
   const categoryMap = {};
-  // Process releases in reverse order (oldest first) so newer ones override
-  for (const release of releases.reverse()) {
-    const metadata = await extractMetadataFromRelease(release);
-    if (metadata && metadata.categories) {
-      for (const category of metadata.categories) {
-        categoryMap[category.name] = {
-          name: category.name,
-          description: category.description || '',
-          libraryVersion: metadata.libraryVersion,
-          releaseTag: metadata.releaseTag,
-          releaseUrl: metadata.releaseUrl,
-          archiveNames: category.archiveNames || []
-        };
-      }
+  
+  // Group releases by category, keep only the latest version of each
+  for (const release of releases) {
+    const catInfo = parseCategoryFromRelease(release);
+    if (!catInfo) continue;
+    
+    // Only keep if this is the first (latest) release for this category
+    // or if it has a higher version
+    const existing = categoryMap[catInfo.name];
+    if (!existing || compareVersions(catInfo.version, existing.version) > 0) {
+      categoryMap[catInfo.name] = {
+        name: catInfo.name,
+        slug: catInfo.slug,
+        version: catInfo.version,
+        releaseTag: catInfo.releaseTag,
+        releaseUrl: catInfo.releaseUrl,
+        archiveNames: catInfo.archiveNames,
+        songCount: catInfo.songCount,
+        totalSize: catInfo.totalSize
+      };
     }
   }
 
@@ -1553,7 +1956,7 @@ ipcMain.handle('get-music-library-status', async () => {
   const installedCats = localMetadata.installedCategories || {};
   const hasUpdates = Object.entries(installedCats).some(([catName, catData]) => {
     const available = availableCategories[catName];
-    return available && available.libraryVersion !== catData.libraryVersion;
+    return available && available.version !== catData.version;
   });
 
   const missingNew = Object.keys(availableCategories).filter(catName => {
@@ -1571,9 +1974,9 @@ ipcMain.handle('get-music-library-status', async () => {
   // Calculate aggregated version (highest version of installed categories)
   let maxVersion = '0.0';
   Object.values(installedCats).forEach(catData => {
-    if (catData.installed && catData.libraryVersion) {
-      if (compareVersions(catData.libraryVersion, maxVersion) > 0) {
-        maxVersion = catData.libraryVersion;
+    if (catData.installed && catData.version) {
+      if (compareVersions(catData.version, maxVersion) > 0) {
+        maxVersion = catData.version;
       }
     }
   });
@@ -1631,55 +2034,82 @@ ipcMain.handle('download-library-categories', async (event, options) => {
         continue;
       }
 
-      // Download and combine archives
+      // Prepare extraction path
       const extractPath = path.join(targetFolder, categoryName);
       if (!fs.existsSync(extractPath)) {
         fs.mkdirSync(extractPath, { recursive: true });
       }
 
+      // Check if this is a split archive (.zip.001, .zip.002, etc.)
+      const isSplitArchive = archiveNames.some(name => /\.zip\.\d{3}$/.test(name));
+      const downloadedParts = [];
+
       // Download each part
       for (let i = 0; i < archiveNames.length; i++) {
         const archiveName = archiveNames[i];
-        const tempPath = path.join(os.tmpdir(), `ambience-${categoryName}-${i}.zip`);
+        const tempPath = path.join(os.tmpdir(), `ambience-${categoryName}-part${i}${isSplitArchive ? '.part' : '.zip'}`);
 
         const downloadSuccess = await downloadGitHubAsset(
           categoryInfo.releaseTag,
           archiveName,
           tempPath,
           (percent) => {
+            // Calculate overall progress across all parts
+            const partProgress = (i + percent / 100) / archiveNames.length * 100;
             event.sender.send('music-download-progress', {
               category: categoryName,
               status: 'downloading',
-              percent: Math.floor(percent)
+              percent: Math.floor(partProgress)
             });
           }
         );
 
         if (!downloadSuccess) {
+          // Clean up any downloaded parts
+          downloadedParts.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
           return { success: false, error: `Failed to download ${archiveName}` };
         }
 
-        // Extract archive
-        event.sender.send('music-download-progress', {
-          category: categoryName,
-          status: 'extracting',
-          percent: 0
-        });
+        downloadedParts.push(tempPath);
+      }
 
-        const extractSuccess = await extractZip(tempPath, extractPath);
-        if (!extractSuccess) {
-          return { success: false, error: `Failed to extract ${archiveName}` };
+      // Combine parts if split archive, then extract
+      event.sender.send('music-download-progress', {
+        category: categoryName,
+        status: 'extracting',
+        percent: 0
+      });
+
+      let finalZipPath;
+      if (isSplitArchive && downloadedParts.length > 1) {
+        // Combine split parts into single zip
+        finalZipPath = path.join(os.tmpdir(), `ambience-${categoryName}-combined.zip`);
+        const combineSuccess = await combineSplitArchive(downloadedParts, finalZipPath);
+        
+        // Clean up parts
+        downloadedParts.forEach(p => { try { fs.unlinkSync(p); } catch (e) {} });
+        
+        if (!combineSuccess) {
+          return { success: false, error: `Failed to combine split archive for ${categoryName}` };
         }
+      } else {
+        // Single zip file
+        finalZipPath = downloadedParts[0];
+      }
 
-        // Clean up temp file
-        try {
-          fs.unlinkSync(tempPath);
-        } catch (e) {}
+      // Extract the archive
+      const extractSuccess = await extractZip(finalZipPath, extractPath);
+      
+      // Clean up
+      try { fs.unlinkSync(finalZipPath); } catch (e) {}
+      
+      if (!extractSuccess) {
+        return { success: false, error: `Failed to extract ${categoryName}` };
       }
 
       // Update metadata for this category
       currentMetadata.installedCategories[categoryName] = {
-        libraryVersion: categoryInfo.libraryVersion,
+        version: categoryInfo.version,
         releaseTag: categoryInfo.releaseTag,
         installed: true,
         optedOut: false
@@ -1692,10 +2122,28 @@ ipcMain.handle('download-library-categories', async (event, options) => {
       });
     }
 
+    // Track all available categories - mark unselected ones as opted out
+    for (const [catName, catInfo] of Object.entries(availableCategories)) {
+      if (!currentMetadata.installedCategories[catName]) {
+        // Category exists but wasn't selected - mark as opted out
+        currentMetadata.installedCategories[catName] = {
+          version: catInfo.version,
+          releaseTag: catInfo.releaseTag,
+          installed: false,
+          optedOut: true
+        };
+      }
+    }
+
     // Write updated metadata
     currentMetadata.lastUpdated = new Date().toISOString();
     currentMetadata.musicFolderPath = targetFolder;
     writeLibraryMetadata(currentMetadata);
+
+    // Notify main window to refresh music files
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('music-files-updated');
+    }
 
     return { success: true, metadata: currentMetadata };
   } catch (e) {
@@ -1704,61 +2152,153 @@ ipcMain.handle('download-library-categories', async (event, options) => {
   }
 });
 
+// Remove a library category (delete folder and update metadata)
+ipcMain.handle('remove-library-category', async (event, categoryName) => {
+  try {
+    if (!categoryName) {
+      return { success: false, error: 'No category specified' };
+    }
+
+    // Get the category folder path
+    const categoryFolder = path.join(musicFolder, categoryName);
+    
+    // Delete the folder if it exists
+    if (fs.existsSync(categoryFolder)) {
+      fs.rmSync(categoryFolder, { recursive: true, force: true });
+    }
+
+    // Update metadata
+    const currentMetadata = readLibraryMetadata();
+    if (currentMetadata && currentMetadata.installedCategories) {
+      if (currentMetadata.installedCategories[categoryName]) {
+        // Mark as not installed but keep the entry for optedOut tracking
+        currentMetadata.installedCategories[categoryName].installed = false;
+        currentMetadata.installedCategories[categoryName].optedOut = true;
+        currentMetadata.lastUpdated = new Date().toISOString();
+        writeLibraryMetadata(currentMetadata);
+      }
+    }
+
+    // Notify main window to refresh music files
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('music-files-updated');
+    }
+
+    return { success: true };
+  } catch (e) {
+    console.error('Failed to remove category:', e);
+    return { success: false, error: e.message };
+  }
+});
+
 // Helper: download GitHub release asset
 function downloadGitHubAsset(releaseTag, assetName, outputPath, progressCallback) {
   return new Promise((resolve) => {
-    const options = {
-      hostname: 'api.github.com',
-      path: `/repos/${GITHUB_REPO}/releases/download/${releaseTag}/${assetName}`,
-      headers: { 'User-Agent': 'AmbienceApp' }
-    };
-
-    const file = fs.createWriteStream(outputPath);
-    https.get(options, (res) => {
-      const totalSize = parseInt(res.headers['content-length'], 10);
-      let downloadedSize = 0;
-
-      res.on('data', (chunk) => {
-        downloadedSize += chunk.length;
-        if (progressCallback && totalSize) {
-          progressCallback((downloadedSize / totalSize) * 100);
-        }
-      });
-
-      res.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve(true);
-      });
-      file.on('error', () => {
-        fs.unlink(outputPath, () => {});
-        resolve(false);
-      });
-    }).on('error', () => {
-      fs.unlink(outputPath, () => {});
-      resolve(false);
-    });
+    // Use direct download URL format for GitHub releases
+    const url = `https://github.com/${MUSIC_LIBRARY_REPO}/releases/download/${releaseTag}/${assetName}`;
+    
+    https.get(url, (res) => {
+      // Handle redirects (GitHub always redirects release downloads)
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        https.get(res.headers.location, (redirectRes) => {
+          handleDownloadResponse(redirectRes, outputPath, progressCallback, resolve);
+        }).on('error', () => resolve(false));
+      } else {
+        handleDownloadResponse(res, outputPath, progressCallback, resolve);
+      }
+    }).on('error', () => resolve(false));
   });
 }
 
-// Helper: extract zip file (using system utilities)
+function handleDownloadResponse(res, outputPath, progressCallback, resolve) {
+  const file = fs.createWriteStream(outputPath);
+  const totalSize = parseInt(res.headers['content-length'], 10);
+  let downloadedSize = 0;
+
+  res.on('data', (chunk) => {
+    downloadedSize += chunk.length;
+    if (progressCallback && totalSize) {
+      progressCallback((downloadedSize / totalSize) * 100);
+    }
+  });
+
+  res.pipe(file);
+  file.on('finish', () => {
+    file.close();
+    resolve(true);
+  });
+  file.on('error', () => {
+    fs.unlink(outputPath, () => {});
+    resolve(false);
+  });
+}
+
+// Helper: combine split archive parts (.zip.001, .zip.002, etc.) into single .zip
+function combineSplitArchive(partPaths, outputPath) {
+  return new Promise((resolve) => {
+    try {
+      const writeStream = fs.createWriteStream(outputPath);
+      let currentIndex = 0;
+
+      function appendNextPart() {
+        if (currentIndex >= partPaths.length) {
+          writeStream.end();
+          resolve(true);
+          return;
+        }
+
+        const partPath = partPaths[currentIndex];
+        const readStream = fs.createReadStream(partPath);
+        
+        readStream.on('end', () => {
+          currentIndex++;
+          appendNextPart();
+        });
+        
+        readStream.on('error', (err) => {
+          console.error('Error reading part:', err);
+          writeStream.end();
+          resolve(false);
+        });
+
+        readStream.pipe(writeStream, { end: false });
+      }
+
+      writeStream.on('error', (err) => {
+        console.error('Error writing combined archive:', err);
+        resolve(false);
+      });
+
+      appendNextPart();
+    } catch (error) {
+      console.error('Combine failed:', error);
+      resolve(false);
+    }
+  });
+}
+
+// Helper: extract zip file using adm-zip (pure JavaScript, cross-platform)
 function extractZip(zipPath, outputPath) {
   return new Promise((resolve) => {
-    if (!fs.existsSync(zipPath)) {
-      resolve(false);
-      return;
-    }
-
-    // Use PowerShell on Windows
-    const command = `[System.IO.Compression.ZipFile]::ExtractToDirectory('${zipPath}', '${outputPath}', $true)`;
-    exec(`powershell -NoProfile -Command "${command}"`, { timeout: 30000 }, (error) => {
-      if (error) {
-        console.error('Extract failed:', error);
+    try {
+      if (!fs.existsSync(zipPath)) {
+        console.error('Zip file not found:', zipPath);
         resolve(false);
-      } else {
-        resolve(true);
+        return;
       }
-    });
+
+      // Ensure output directory exists
+      if (!fs.existsSync(outputPath)) {
+        fs.mkdirSync(outputPath, { recursive: true });
+      }
+
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(outputPath, true); // true = overwrite
+      resolve(true);
+    } catch (error) {
+      console.error('Extract failed:', error);
+      resolve(false);
+    }
   });
 }
 

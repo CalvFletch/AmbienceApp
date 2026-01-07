@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkAudioActivity: (deviceName) => ipcRenderer.invoke('check-audio-activity', deviceName),
   openDevicesWindow: () => ipcRenderer.send('open-devices-window'),
   openSettingsWindow: () => ipcRenderer.send('open-settings-window'),
+  openSettingsLibrary: () => ipcRenderer.send('open-settings-library'),
+  openDebugWindow: () => ipcRenderer.send('open-debug-window'),
   onDuckDevicesUpdated: (callback) => ipcRenderer.on('on-duck-devices-updated', (event, ...args) => callback(...args)),
   onSettingsUpdated: (callback) => ipcRenderer.on('on-settings-updated', (event, ...args) => callback(...args)),
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
@@ -25,5 +27,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
   saveDismissedUpdate: (version) => ipcRenderer.invoke('save-dismissed-update', version),
   getDismissedUpdate: () => ipcRenderer.invoke('get-dismissed-update'),
-  onProcessListUpdated: (callback) => ipcRenderer.on('process-list-updated', (event, ...args) => callback(...args))
+  // Music library
+  getMusicLibraryStatus: () => ipcRenderer.invoke('get-music-library-status'),
+  onProcessListUpdated: (callback) => ipcRenderer.on('process-list-updated', (event, ...args) => callback(...args)),
+  onMusicFilesUpdated: (callback) => ipcRenderer.on('music-files-updated', (event, ...args) => callback(...args)),
+  // Debug events from debug window
+  onDebugShowUpdate: (callback) => ipcRenderer.on('debug-show-update', (event, ...args) => callback(...args)),
+  onDebugShowLibrary: (callback) => ipcRenderer.on('debug-show-library', (event, ...args) => callback(...args)),
+  onDebugHideUpdate: (callback) => ipcRenderer.on('debug-hide-update', (event, ...args) => callback(...args)),
+  onDebugDuck: (callback) => ipcRenderer.on('debug-duck', (event, ...args) => callback(...args)),
+  onDebugUnduck: (callback) => ipcRenderer.on('debug-unduck', (event, ...args) => callback(...args)),
+  onDebugForcePlay: (callback) => ipcRenderer.on('debug-force-play', (event, ...args) => callback(...args)),
+  onDebugForcePause: (callback) => ipcRenderer.on('debug-force-pause', (event, ...args) => callback(...args)),
+  onDebugForceSkip: (callback) => ipcRenderer.on('debug-force-skip', (event, ...args) => callback(...args))
 });

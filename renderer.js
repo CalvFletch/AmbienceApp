@@ -47,12 +47,8 @@ function dlog(msg, type = '') {
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === 'd') {
     e.preventDefault();
-    debugEnabled = !debugEnabled;
-    debugLog.classList.toggle('hidden', !debugEnabled);
-    if (debugEnabled) {
-      dlog('Debug log enabled', 'info');
-      dlog(`Ducking: ${duckingEnabled ? 'ON' : 'OFF'}, Devices: ${selectedDuckDevices.join(', ') || 'none'}`, 'info');
-    }
+    // Open debug window instead of inline panel
+    window.electronAPI.openDebugWindow();
   }
 });
 
@@ -168,7 +164,8 @@ function stopDucking(fadeDuration = 15000) {
 
 async function init() {
   setupEventListeners();
-  setupUpdateNotification();
+  setupNotificationBanner();
+  setupDebugEventHandlers();
   await loadSettings();
   await loadMusicFromFolder();
   if (musicFiles.length > 0) {
@@ -180,8 +177,12 @@ async function init() {
       startDuckingCheck();
     }
   }
-  // Check for updates after a short delay
-  setTimeout(checkForUpdates, 3000);
+  // Check for updates and music library after a short delay
+  // Notifications will queue up and show one after another
+  setTimeout(async () => {
+    await checkForUpdates();
+    await checkMusicLibrary();
+  }, 2000);
 }
 
 
@@ -279,29 +280,80 @@ async function loadSettings() {
   }
 }
 
+// Notification Queue System
+const notificationQueue = [];
+let currentNotification = null;
+
+// Notification Banner Logic
+const notificationBanner = document.getElementById('notificationBanner');
+const notificationText = document.getElementById('notificationText');
+const notificationCheckboxLabel = document.getElementById('notificationCheckboxLabel');
+const notificationDontShow = document.getElementById('notificationDontShow');
+const notificationIgnoreBtn = document.getElementById('notificationIgnoreBtn');
+const notificationActionBtn = document.getElementById('notificationActionBtn');
+
+function setupNotificationBanner() {
+  const banner = document.getElementById('notificationBanner');
+  const actionBtn = document.getElementById('notificationActionBtn');
+  const ignoreBtn = document.getElementById('notificationIgnoreBtn');
+  const dontShowCheckbox = document.getElementById('notificationDontShow');
+
+  actionBtn.addEventListener('click', () => {
+    if (currentNotification && currentNotification.onAction) {
+      currentNotification.onAction();
+    }
+    hideCurrentNotification();
+  });
+
+  ignoreBtn.addEventListener('click', () => {
+    if (currentNotification && currentNotification.onDismiss) {
+      currentNotification.onDismiss();
+    }
+    if (dontShowCheckbox.checked && currentNotification && currentNotification.onDontShowAgain) {
+      currentNotification.onDontShowAgain();
+    }
+    hideCurrentNotification();
+  });
+}
+
+function queueNotification(notification) {
+  // notification: { type, text, buttonText, onAction, onDismiss, onDontShowAgain }
+  notificationQueue.push(notification);
+  if (!currentNotification) {
+    showNextNotification();
+  }
+}
+
+function showNextNotification() {
+  if (notificationQueue.length === 0) {
+    currentNotification = null;
+    return;
+  }
+
+  currentNotification = notificationQueue.shift();
+  const banner = document.getElementById('notificationBanner');
+  const textEl = document.getElementById('notificationText');
+  const actionBtn = document.getElementById('notificationActionBtn');
+  const dontShowCheckbox = document.getElementById('notificationDontShow');
+
+  textEl.textContent = currentNotification.text;
+  actionBtn.textContent = currentNotification.buttonText;
+  dontShowCheckbox.checked = false; // Reset checkbox for each notification
+  banner.classList.remove('hidden');
+  dlog(`Notification shown: ${currentNotification.type}`, 'info');
+}
+
+function hideCurrentNotification() {
+  const banner = document.getElementById('notificationBanner');
+  banner.classList.add('hidden');
+  currentNotification = null;
+  // Show next notification after a short delay
+  setTimeout(showNextNotification, 300);
+}
+
 // Update notification
 let updateReleaseUrl = '';
 let dismissedUpdateVersion = '';
-
-function setupUpdateNotification() {
-  const updateBtn = document.getElementById('updateBtn');
-  const updateDismiss = document.getElementById('updateDismiss');
-  const updateNotification = document.getElementById('updateNotification');
-
-  updateBtn.addEventListener('click', () => {
-    if (updateReleaseUrl) {
-      window.electronAPI.openExternalUrl(updateReleaseUrl);
-    }
-  });
-
-  updateDismiss.addEventListener('click', async () => {
-    updateNotification.classList.add('hidden');
-    // Remember dismissed version
-    if (dismissedUpdateVersion) {
-      await window.electronAPI.saveDismissedUpdate(dismissedUpdateVersion);
-    }
-  });
-}
 
 async function checkForUpdates() {
   try {
@@ -311,17 +363,158 @@ async function checkForUpdates() {
       const dismissed = await window.electronAPI.getDismissedUpdate();
       if (dismissed === result.latestVersion) {
         dlog(`Update v${result.latestVersion} was dismissed by user`, 'info');
-        return;
+        return false;
       }
       dismissedUpdateVersion = result.latestVersion;
       updateReleaseUrl = result.releaseUrl;
-      document.getElementById('updateVersion').textContent = `v${result.latestVersion}`;
-      document.getElementById('updateNotification').classList.remove('hidden');
+
+      queueNotification({
+        type: 'update',
+        text: `Update available: v${result.latestVersion}`,
+        buttonText: 'Download',
+        onAction: () => {
+          if (updateReleaseUrl) {
+            window.electronAPI.openExternalUrl(updateReleaseUrl);
+          }
+        },
+        onDismiss: () => {
+          // Just dismiss, don't save
+        },
+        onDontShowAgain: async () => {
+          if (dismissedUpdateVersion) {
+            await window.electronAPI.saveDismissedUpdate(dismissedUpdateVersion);
+          }
+        }
+      });
+
       dlog(`Update available: v${result.latestVersion} (current: v${result.currentVersion})`, 'info');
+      return true;
     }
   } catch (e) {
     // Silently fail - update check is not critical
   }
+  return false;
+}
+
+// Music library notification
+async function checkMusicLibrary() {
+  try {
+    const settings = await window.electronAPI.loadSettings();
+    if (settings.dismissedLibraryPrompt) {
+      return;
+    }
+
+    // Check if user has downloaded any library categories
+    const libraryStatus = await window.electronAPI.getMusicLibraryStatus();
+    if (libraryStatus && libraryStatus.localMetadata && libraryStatus.localMetadata.installedCategories) {
+      const installedCats = libraryStatus.localMetadata.installedCategories;
+      const hasAnyInstalled = Object.values(installedCats).some(cat => cat.installed);
+      if (hasAnyInstalled) {
+        return; // User has at least one category downloaded
+      }
+    }
+
+    // Check if user has any music
+    if (musicFiles.length === 0) {
+      queueNotification({
+        type: 'music-library',
+        text: 'Download the music library?',
+        buttonText: 'Download',
+        onAction: () => {
+          window.electronAPI.openSettingsLibrary();
+        },
+        onDismiss: () => {
+          // Just dismiss, don't save
+        },
+        onDontShowAgain: async () => {
+          await window.electronAPI.saveSettings({ dismissedLibraryPrompt: true });
+        }
+      });
+    }
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+// Debug event handlers - receive commands from debug window
+function setupDebugEventHandlers() {
+  // Show update notification (debug trigger)
+  window.electronAPI.onDebugShowUpdate((data) => {
+    dismissedUpdateVersion = data.version;
+    updateReleaseUrl = data.releaseUrl;
+    queueNotification({
+      type: 'update',
+      text: `Update available: v${data.version}`,
+      buttonText: 'Download',
+      onAction: () => {
+        if (updateReleaseUrl) {
+          window.electronAPI.openExternalUrl(updateReleaseUrl);
+        }
+      },
+      onDismiss: () => {},
+      onDontShowAgain: async () => {
+        if (dismissedUpdateVersion) {
+          await window.electronAPI.saveDismissedUpdate(dismissedUpdateVersion);
+        }
+      }
+    });
+    dlog(`[DEBUG] Update notification triggered: v${data.version}`, 'info');
+  });
+
+  // Show library notification (debug trigger)
+  window.electronAPI.onDebugShowLibrary(() => {
+    queueNotification({
+      type: 'music-library',
+      text: 'Download the music library?',
+      buttonText: 'Download',
+      onAction: () => {
+        window.electronAPI.openSettingsLibrary();
+      },
+      onDismiss: () => {},
+      onDontShowAgain: async () => {
+        await window.electronAPI.saveSettings({ dismissedLibraryPrompt: true });
+      }
+    });
+    dlog('[DEBUG] Library notification triggered', 'info');
+  });
+
+  // Hide update notification
+  window.electronAPI.onDebugHideUpdate(() => {
+    hideCurrentNotification();
+    dlog('[DEBUG] Notification hidden', 'info');
+  });
+
+  // Simulate duck event
+  window.electronAPI.onDebugDuck(() => {
+    dlog('[DEBUG] Simulating duck event', 'warn');
+    startDucking();
+  });
+
+  // Simulate unduck event
+  window.electronAPI.onDebugUnduck(() => {
+    dlog('[DEBUG] Simulating unduck event', 'warn');
+    stopDucking(500);
+  });
+
+  // Force play
+  window.electronAPI.onDebugForcePlay(() => {
+    dlog('[DEBUG] Force play', 'info');
+    isManuallyPaused = false;
+    activePlayer.play().catch(console.error);
+  });
+
+  // Force pause
+  window.electronAPI.onDebugForcePause(() => {
+    dlog('[DEBUG] Force pause', 'info');
+    isManuallyPaused = true;
+    activePlayer.pause();
+  });
+
+  // Force skip
+  window.electronAPI.onDebugForceSkip(() => {
+    dlog('[DEBUG] Force skip track', 'info');
+    playRandomTrack();
+  });
 }
 
 async function saveCurrentSettings() {
@@ -531,6 +724,17 @@ function setupEventListeners() {
       selectedDuckExes = settings.duckExes;
     }
     restartDuckingIfEnabled();
+  });
+
+  // Listen for music files updates (after library download/remove)
+  window.electronAPI.onMusicFilesUpdated(async () => {
+    console.log('Music files updated, reloading...');
+    const wasPlaying = !activePlayer.paused;
+    await loadMusicFromFolder();
+    // If music was playing or not manually paused, start playing from new library
+    if ((wasPlaying || !isManuallyPaused) && musicFiles.length > 0) {
+      playRandomTrack();
+    }
   });
 
   // Track section click to show music list
@@ -815,6 +1019,31 @@ function fadeVolume(target, duration, callback) {
       if (callback) callback();
     }
   }, stepTime);
+}
+
+// For debugging: show notification on Ctrl+Shift+N
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'n') {
+    showNotification('Debug notification: update available!', 'Download');
+  }
+});
+
+// Notification system
+function showNotification(text, actionLabel = 'Download', onAction = null, onIgnore = null) {
+  notificationText.textContent = text;
+  notificationBanner.classList.remove('hidden');
+  notificationActionBtn.textContent = actionLabel;
+  notificationIgnoreBtn.textContent = 'Ignore';
+  notificationActionBtn.onclick = () => {
+    // Open music library page in settings
+    window.electronAPI.openSettings('musicLibrary');
+    notificationBanner.classList.add('hidden');
+    if (onAction) onAction();
+  };
+  notificationIgnoreBtn.onclick = () => {
+    notificationBanner.classList.add('hidden');
+    if (onIgnore) onIgnore();
+  };
 }
 
 // Start the app

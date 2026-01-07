@@ -21,6 +21,23 @@
   <!-- Drag Area (top portion only) -->
   <div class="drag-area"></div>
 
+  <!-- Notification Banner (top of app) -->
+  <div class="notification-banner hidden" id="notificationBanner">
+    <div class="notification-content">
+      <div class="notification-left">
+        <span class="notification-text" id="notificationText"></span>
+        <label class="notification-checkbox" id="notificationCheckboxLabel">
+          <input type="checkbox" id="notificationDontShow">
+          <span>Don't show again</span>
+        </label>
+      </div>
+      <div class="notification-buttons">
+        <button class="notification-btn" id="notificationIgnoreBtn">Ignore</button>
+        <button class="notification-btn" id="notificationActionBtn">Download</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main Screen Corner Decorations -->
   <div class="main-corner corner-decoration corner-tl" style="top: 12px; left: 12px;"></div>
   <div class="main-corner corner-decoration corner-tr" style="top: 12px; right: 12px;"></div>
@@ -137,12 +154,6 @@
   <!-- Audio element -->
   <audio id="audioPlayer"></audio>
 
-  <!-- Update notification -->
-  <div class="update-notification hidden" id="updateNotification">
-    <span class="update-text">Update available: <span id="updateVersion"></span></span>
-    <button class="update-btn" id="updateBtn">Download</button>
-    <button class="update-dismiss" id="updateDismiss">×</button>
-  </div>
 
   <!-- Debug Log (toggle with Ctrl+D) -->
   <div class="debug-log hidden" id="debugLog">

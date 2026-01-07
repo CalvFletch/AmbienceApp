@@ -21,6 +21,7 @@ config.json
 
 # IDE/Editor
 .claude/
+.qodo/
 .vscode/
 .idea/
 
@@ -33,10 +34,19 @@ nul
 build.bat
 run.bat
 
+# Icon development folder
+icon/
+
+# Debug dev tools (kept locally)
+debug.js
+debug.html
+debug-preload.js
+
 # Adobe source files
 *.ai
 *.psd
 *.psb
+icon.svg
 
 # Plan files
 plan.md

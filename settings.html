@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: file:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: file: https://raw.githubusercontent.com;">
   <title>Settings</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -207,14 +207,13 @@
       color: var(--text-primary);
     }
 
-    .folder-path-btn {
+    .folder-path-input {
       flex: 1;
       padding: 5px 8px;
       background: transparent;
       border: none;
       border-bottom: 1px solid var(--border-color);
       color: var(--text-secondary);
-      cursor: pointer;
       font-family: inherit;
       font-size: 10px;
       text-align: left;
@@ -222,10 +221,50 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       transition: all 0.15s ease;
+      outline: none;
     }
 
-    .folder-path-btn:hover {
+    .folder-path-input:focus {
       color: var(--text-primary);
+      border-bottom-color: var(--text-secondary);
+    }
+
+    .folder-error {
+      font-size: 9px;
+      color: #ff6b6b;
+      padding: 4px 0 0 0;
+      letter-spacing: 0.5px;
+      min-height: 0;
+      transition: all 0.15s ease;
+    }
+
+    .folder-error:empty {
+      display: none;
+    }
+
+    .settings-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 10px 20px;
+      border-top: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .save-all-btn {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-dim);
+      padding: 6px 20px;
+      font-family: inherit;
+      font-size: 10px;
+      letter-spacing: 2px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .save-all-btn:hover {
+      color: var(--text-secondary);
+      border-color: var(--text-secondary);
     }
 
     /* Duck mode buttons */
@@ -331,7 +370,32 @@
     .selection-content {
       flex: 1;
       overflow-y: auto;
+      overflow-x: hidden;
       padding: 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+    }
+
+    .selection-content::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .selection-content::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.2);
+      border-radius: 4px;
+    }
+
+    .selection-content::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.25);
+      border-radius: 4px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+
+    .selection-content::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.4);
+      border: 2px solid transparent;
+      background-clip: padding-box;
     }
 
     /* Device list (single column) */
@@ -736,6 +800,215 @@
       margin-left: auto;
     }
 
+    /* Library Page Styles */
+    .library-list {
+      padding: 8px 0;
+    }
+
+    .library-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 20px;
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+      gap: 12px;
+      border-bottom: 1px solid rgba(100, 100, 100, 0.2);
+    }
+
+    .library-item:hover {
+      background-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .library-item.selected {
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .library-item.disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    .library-item.disabled:hover {
+      background-color: transparent;
+    }
+
+    .library-item .checkbox-icon {
+      width: 16px;
+      height: 16px;
+      border: 1px solid var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .library-item.selected .checkbox-icon {
+      border-color: var(--text-secondary);
+    }
+
+    .library-item .checkbox-icon svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .library-item.selected .checkbox-icon svg {
+      opacity: 1;
+    }
+
+    .library-item:hover .checkbox-icon {
+      border-color: var(--text-secondary);
+    }
+
+    .library-select-all {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: background-color 0.15s ease;
+      font-size: 10px;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+    }
+
+    .library-select-all:hover {
+      background-color: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+    }
+
+    .library-select-all.selected {
+      color: var(--text-secondary);
+    }
+
+    .library-select-all .checkbox-icon {
+      width: 16px;
+      height: 16px;
+      border: 1px solid var(--text-dim);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.15s ease;
+    }
+
+    .library-select-all.selected .checkbox-icon {
+      border-color: var(--text-secondary);
+    }
+
+    .library-select-all .checkbox-icon svg {
+      width: 12px;
+      height: 12px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+    }
+
+    .library-select-all.selected .checkbox-icon svg {
+      opacity: 1;
+    }
+
+    .library-select-all.indeterminate .checkbox-icon::after {
+      content: '';
+      width: 8px;
+      height: 2px;
+      background: var(--text-secondary);
+    }
+
+    .library-select-all.indeterminate .checkbox-icon svg {
+      opacity: 0;
+    }
+
+    .library-select-all.disabled {
+      opacity: 0.4;
+      pointer-events: none;
+      cursor: default;
+    }
+
+    .library-item-info {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .library-item-icon {
+      width: 24px;
+      height: 24px;
+      object-fit: contain;
+      flex-shrink: 0;
+      opacity: 0.7;
+      transition: opacity 0.15s ease;
+    }
+
+    .library-item:hover .library-item-icon,
+    .library-item.selected .library-item-icon {
+      opacity: 1;
+    }
+
+    .library-item-name {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: var(--text-secondary);
+      transition: color 0.15s ease;
+    }
+
+    .library-item:hover .library-item-name,
+    .library-item.selected .library-item-name {
+      color: var(--text-primary);
+    }
+
+    .library-item-meta {
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+    }
+
+    .library-item-version {
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+      margin-left: auto;
+    }
+
+    .library-item-version.update-available {
+      color: #6cb2eb;
+    }
+
+    .library-item .remove-btn {
+      background: transparent;
+      border: 1px solid rgba(255, 100, 100, 0.3);
+      color: rgba(255, 100, 100, 0.6);
+      width: 20px;
+      height: 20px;
+      font-size: 14px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+
+    .library-item .remove-btn:hover {
+      border-color: rgba(255, 100, 100, 0.7);
+      color: rgba(255, 100, 100, 1);
+    }
+
+    .library-footer {
+      padding: 12px 20px;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .library-progress {
+      padding: 0 0 8px 0;
+    }
+
     .hidden {
       display: none !important;
     }
@@ -765,63 +1038,60 @@
       <!-- Main Settings Page -->
       <div class="page" id="mainPage">
         <div class="page-content">
-          <!-- Music Folder -->
+          <!-- MUSIC Section -->
           <div class="section">
-            <div class="section-label">Music Folder</div>
+            <div class="section-label">Music</div>
             <div class="folder-row">
-              <button class="folder-icon-btn" id="openFolderBtn" title="Open Folder">
+              <input type="text" class="folder-path-input" id="folderPathInput" placeholder="./music">
+              <button class="folder-icon-btn" id="openFolderBtn" title="Browse folder (Ctrl+click to open)">
                 <svg viewBox="0 0 24 24" fill="currentColor">
                   <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
                 </svg>
               </button>
-              <button class="folder-path-btn" id="selectFolderBtn" title="Click to change folder">
-                <span id="folderPathText">./music</span>
-              </button>
             </div>
+            <div class="folder-error" id="folderError"></div>
+            <button class="settings-btn" id="updateMusicBtn" style="margin-top: 8px;">
+              <span id="musicBtnText">Library</span>
+              <svg viewBox="0 0 24 24" fill="currentColor" style="width: 10px; height: 10px;">
+                <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/>
+              </svg>
+            </button>
           </div>
 
-          <!-- Duck Mode -->
+          <!-- DUCKING Section -->
           <div class="section">
-            <div class="section-label">Duck Mode</div>
+            <div class="section-label">Ducking</div>
             <div class="duck-mode-row">
               <button class="duck-mode-btn active" id="duckModeDevice">Device</button>
               <button class="duck-mode-btn" id="duckModeExe">Program</button>
             </div>
+            <!-- Device Duck Settings -->
+            <div id="deviceDuckSettings" style="margin-top: 8px;">
+              <button class="settings-btn" id="selectDevicesBtn">
+                <span>Select Devices</span>
+                <span class="selected-count" id="deviceCount">0 selected</span>
+              </button>
+            </div>
+            <!-- Exe Duck Settings -->
+            <div class="hidden" id="exeDuckSettings" style="margin-top: 8px;">
+              <button class="settings-btn" id="selectProgramsBtn">
+                <span>Select Programs</span>
+                <span class="selected-count" id="programCount">0 selected</span>
+              </button>
+            </div>
           </div>
 
-          <!-- Device Duck Settings -->
-          <div class="section" id="deviceDuckSettings">
-            <div class="section-label">Duck Against Device</div>
-            <button class="settings-btn" id="selectDevicesBtn">
-              <span>Select Devices</span>
-              <span class="selected-count" id="deviceCount">0 selected</span>
-            </button>
-          </div>
-
-          <!-- Exe Duck Settings -->
-          <div class="section hidden" id="exeDuckSettings">
-            <div class="section-label">Duck Against Programs</div>
-            <button class="settings-btn" id="selectProgramsBtn">
-              <span>Select Programs</span>
-              <span class="selected-count" id="programCount">0 selected</span>
-            </button>
-          </div>
-
-          <!-- Start on Boot -->
+          <!-- OTHER Section -->
           <div class="section">
+            <div class="section-label">Other</div>
             <label class="checkbox-toggle">
               <input type="checkbox" id="startOnBootCheckbox">
               <span>Start with Windows</span>
             </label>
-          </div>
-
-          <!-- Music Library -->
-          <div class="section">
-            <div class="section-label">Music Library</div>
-            <button class="settings-btn" id="updateMusicBtn">
-              <span id="musicBtnText">Check for Updates</span>
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+            <button class="settings-btn" id="checkUpdatesBtn" style="margin-top: 8px;">
+              <span>Check for Updates</span>
+              <svg viewBox="0 0 24 24" fill="currentColor" style="width: 12px; height: 12px;">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
               </svg>
             </button>
           </div>
@@ -867,6 +1137,37 @@
           </div>
         </div>
       </div>
+
+      <!-- Music Library Page -->
+      <div class="page hidden" id="libraryPage">
+        <div class="selection-page">
+          <div class="library-select-all" id="librarySelectAll">
+            <div class="checkbox-icon" id="librarySelectAllIcon">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+            </div>
+            <span>Select All</span>
+          </div>
+          <div class="selection-content">
+            <div class="library-list" id="libraryList">
+              <div class="loading">Loading library...</div>
+            </div>
+          </div>
+          <div class="library-footer" id="libraryFooter">
+            <div class="library-progress hidden" id="downloadProgressSection">
+              <div id="downloadProgressText" style="font-size: 10px; letter-spacing: 1px; margin-bottom: 6px;"></div>
+              <div class="progress-bar-container" style="height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;">
+                <div id="downloadProgressBar" style="height: 100%; width: 0%; background: var(--text-secondary); border-radius: 2px; transition: width 0.2s ease;"></div>
+              </div>
+            </div>
+            <button class="browse-btn" id="libraryDownloadBtn">Download Selected</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer with Save button -->
+    <div class="settings-footer" id="settingsFooter">
+      <button class="save-all-btn" id="saveAllBtn">SAVE</button>
     </div>
   </div>
 
@@ -874,51 +1175,49 @@
   <div class="modal-overlay hidden" id="musicLibraryModal">
     <div class="modal-content">
       <div class="modal-header">
-        <span>Music Library</span>
+        <span class="music-modal-title">Music Library</span>
         <button class="modal-close" id="musicLibraryModalClose">×</button>
       </div>
-      
       <div class="modal-body">
-        <!-- Music folder path -->
-        <div class="section">
-          <div class="section-label">Music Folder</div>
-          <div class="folder-row">
-            <button class="folder-icon-btn" id="musicFolderOpenBtn" title="Open Folder">
-              <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
-              </svg>
-            </button>
-            <button class="folder-path-btn" id="musicFolderChangeBtn" title="Change folder">
-              <span id="musicFolderPathText">./music</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- Library status -->
-        <div class="section">
-          <div class="section-label" id="libraryStatusLabel">Library Status</div>
-          <div id="libraryStatusText" style="font-size: 11px; color: var(--text-secondary); margin-bottom: 8px;"></div>
-        </div>
-
-        <!-- Available categories -->
-        <div class="section">
-          <div class="section-label">Available Categories</div>
-          <div id="categoriesCheckboxes" style="display: flex; flex-direction: column; gap: 6px;"></div>
-        </div>
-
-        <!-- Progress indicator -->
-        <div class="section hidden" id="downloadProgressSection">
-          <div class="section-label">Download Progress</div>
-          <div id="downloadProgressText" style="font-size: 10px; color: var(--text-secondary); margin-bottom: 6px;"></div>
-          <div style="width: 100%; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;">
-            <div id="downloadProgressBar" style="height: 100%; width: 0%; background: var(--text-secondary); border-radius: 2px; transition: width 0.2s ease;"></div>
-          </div>
+        <label for="selectAllCategories" class="select-all-row" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 10px; letter-spacing: 1px; color: var(--text-dim); cursor: pointer;">
+          <input type="checkbox" id="selectAllCategories" style="cursor: pointer;">
+          <span>SELECT ALL</span>
+        </label>
+        <div id="categoriesCheckboxes" class="categories-list"></div>
+      </div>
+      <div class="section hidden" id="downloadProgressSection">
+        <div id="downloadProgressText"></div>
+        <div class="music-modal-progress-bar">
+          <div id="downloadProgressBar"></div>
         </div>
       </div>
-
       <div class="modal-footer">
         <button class="modal-cancel-btn" id="musicLibraryModalCancel">Cancel</button>
         <button class="modal-action-btn" id="musicLibraryModalDownload">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete Confirmation Modal -->
+  <div class="modal-overlay hidden" id="deleteConfirmModal">
+    <div class="modal-content" style="max-width: 320px;">
+      <div class="modal-header">
+        <span>Confirm Remove</span>
+        <button class="modal-close" id="deleteConfirmClose">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="deleteConfirmText" style="font-size: 11px; line-height: 1.5; margin-bottom: 12px;"></p>
+        <div class="custom-checkbox-row" id="deleteConfirmDontAskRow" style="display: flex; align-items: center; gap: 8px; font-size: 10px; color: var(--text-dim); cursor: pointer;">
+          <div class="checkbox-icon" style="width: 14px; height: 14px; border: 1px solid var(--text-dim); display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.15s ease;">
+            <svg viewBox="0 0 24 24" fill="currentColor" style="width: 10px; height: 10px; opacity: 0; transition: opacity 0.15s ease;"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+          </div>
+          <span>Don't ask again</span>
+        </div>
+        <input type="checkbox" id="deleteConfirmDontAsk" style="display: none;">
+      </div>
+      <div class="modal-footer">
+        <button class="modal-cancel-btn" id="deleteConfirmCancel">Cancel</button>
+        <button class="modal-action-btn" id="deleteConfirmYes" style="background: rgba(255,100,100,0.2); border-color: rgba(255,100,100,0.5);">Remove</button>
       </div>
     </div>
   </div>

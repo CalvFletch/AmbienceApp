@@ -1,8 +1,9 @@
 // Settings Window Script
 // DOM Elements - Main Page
-const folderPathText = document.getElementById('folderPathText');
+const folderPathInput = document.getElementById('folderPathInput');
 const openFolderBtn = document.getElementById('openFolderBtn');
-const selectFolderBtn = document.getElementById('selectFolderBtn');
+const saveAllBtn = document.getElementById('saveAllBtn');
+const folderError = document.getElementById('folderError');
 const duckModeDeviceBtn = document.getElementById('duckModeDevice');
 const duckModeExeBtn = document.getElementById('duckModeExe');
 const deviceDuckSettings = document.getElementById('deviceDuckSettings');
@@ -22,6 +23,7 @@ const headerTitle = document.getElementById('headerTitle');
 const mainPage = document.getElementById('mainPage');
 const devicesPage = document.getElementById('devicesPage');
 const programsPage = document.getElementById('programsPage');
+const libraryPage = document.getElementById('libraryPage');
 
 // Device page elements
 const deviceList = document.getElementById('deviceList');
@@ -57,20 +59,30 @@ let isFetchingProcesses = false;
 let musicLibraryStatus = null;
 let selectedMusicCategories = [];
 let isDownloadingLibrary = false;
+let skipDeleteWarning = false;
 
 // Music library modal DOM
 const musicLibraryModal = document.getElementById('musicLibraryModal');
 const musicLibraryModalClose = document.getElementById('musicLibraryModalClose');
 const musicLibraryModalCancel = document.getElementById('musicLibraryModalCancel');
 const musicLibraryModalDownload = document.getElementById('musicLibraryModalDownload');
-const musicFolderPathText = document.getElementById('musicFolderPathText');
-const musicFolderChangeBtn = document.getElementById('musicFolderChangeBtn');
-const musicFolderOpenBtn = document.getElementById('musicFolderOpenBtn');
 const categoriesCheckboxes = document.getElementById('categoriesCheckboxes');
-const libraryStatusText = document.getElementById('libraryStatusText');
 const downloadProgressSection = document.getElementById('downloadProgressSection');
 const downloadProgressText = document.getElementById('downloadProgressText');
 const downloadProgressBar = document.getElementById('downloadProgressBar');
+
+// Library page DOM
+const libraryList = document.getElementById('libraryList');
+const libraryDownloadBtn = document.getElementById('libraryDownloadBtn');
+const libraryFooter = document.getElementById('libraryFooter');
+
+// Delete confirmation modal DOM
+const deleteConfirmModal = document.getElementById('deleteConfirmModal');
+const deleteConfirmClose = document.getElementById('deleteConfirmClose');
+const deleteConfirmCancel = document.getElementById('deleteConfirmCancel');
+const deleteConfirmYes = document.getElementById('deleteConfirmYes');
+const deleteConfirmText = document.getElementById('deleteConfirmText');
+const deleteConfirmDontAsk = document.getElementById('deleteConfirmDontAsk');
 
 // Prevent initial slide animation on first paint; re-enable on next frame
 document.body.classList.add('no-anim');
@@ -84,7 +96,7 @@ setupEventListeners();
 async function init() {
   const state = await window.electronAPI.getInitialState();
 
-  folderPathText.textContent = state.musicFolder || './music';
+  folderPathInput.value = state.musicFolder || './music';
   duckMode = state.duckMode || 'device';
   selectedDuckDevices = state.duckDevices || [];
   selectedDuckExes = state.duckExes || [];
@@ -112,16 +124,67 @@ function setupEventListeners() {
     navigateToPage('main');
   });
 
-  // Folder buttons
-  openFolderBtn.addEventListener('click', () => {
-    window.electronAPI.openMusicFolder();
+  // Folder icon button - browse to select folder, or CTRL+click to open in explorer
+  openFolderBtn.addEventListener('click', async (e) => {
+    if (e.ctrlKey) {
+      // CTRL+click: open folder in file explorer
+      window.electronAPI.openMusicFolder();
+    } else {
+      // Normal click: browse to select a new folder
+      const result = await window.electronAPI.selectMusicFolder();
+      if (result) {
+        folderPathInput.value = result;
+        folderError.textContent = '';
+        // Immediately preview the selected folder
+        await window.electronAPI.previewMusicFolder(result);
+      }
+    }
   });
 
-  selectFolderBtn.addEventListener('click', async () => {
-    const newPath = await window.electronAPI.selectMusicFolder();
-    if (newPath) {
-      folderPathText.textContent = newPath;
+  // Save All button - saves all settings including folder path and closes window
+  saveAllBtn.addEventListener('click', async () => {
+    const path = folderPathInput.value.trim();
+    if (!path) {
+      folderError.textContent = 'PLEASE ENTER A FOLDER PATH';
+      return;
     }
+
+    const result = await window.electronAPI.saveMusicFolder(path);
+    if (result.success) {
+      folderError.textContent = '';
+      // Save other settings too
+      saveSettings();
+      // Close the window after saving
+      window.electronAPI.closeWindow();
+    } else {
+      folderError.textContent = result.error;
+    }
+  });
+
+  // Debounce timer for folder path changes
+  let folderCheckTimeout = null;
+  
+  // Check folder and update music when path changes
+  folderPathInput.addEventListener('input', async () => {
+    folderError.textContent = '';
+    
+    // Debounce: wait 500ms after user stops typing
+    if (folderCheckTimeout) {
+      clearTimeout(folderCheckTimeout);
+    }
+    
+    folderCheckTimeout = setTimeout(async () => {
+      const path = folderPathInput.value.trim();
+      if (path) {
+        // Validate and update music immediately (without saving to config)
+        const result = await window.electronAPI.previewMusicFolder(path);
+        if (result.success) {
+          folderError.textContent = '';
+        } else {
+          folderError.textContent = result.error;
+        }
+      }
+    }, 500);
   });
 
   // Duck mode toggle
@@ -157,6 +220,46 @@ function setupEventListeners() {
     await window.electronAPI.setStartOnBoot(e.target.checked);
   });
 
+  // Check for updates button
+  const checkUpdatesBtn = document.getElementById('checkUpdatesBtn');
+  let updateAvailable = false;
+  let updateUrl = '';
+
+  checkUpdatesBtn.addEventListener('click', async () => {
+    const btnText = checkUpdatesBtn.querySelector('span');
+
+    // If update already found, open releases page
+    if (updateAvailable && updateUrl) {
+      window.electronAPI.openExternalUrl(updateUrl);
+      return;
+    }
+
+    const originalText = btnText.textContent;
+    btnText.textContent = 'Checking...';
+    checkUpdatesBtn.disabled = true;
+
+    try {
+      const result = await window.electronAPI.checkForUpdates();
+      if (result.hasUpdate) {
+        updateAvailable = true;
+        updateUrl = result.releaseUrl || `https://github.com/CalvFletch/AmbienceApp/releases/tag/v${result.latestVersion}`;
+        btnText.textContent = `Download v${result.latestVersion}`;
+        checkUpdatesBtn.disabled = false;
+        // Don't reset - keep showing download link
+        return;
+      } else {
+        btnText.textContent = 'Up to date!';
+      }
+    } catch (e) {
+      btnText.textContent = 'Check failed';
+    }
+
+    setTimeout(() => {
+      btnText.textContent = originalText;
+      checkUpdatesBtn.disabled = false;
+    }, 3000);
+  });
+
   // Browse for exe
   browseExeBtn.addEventListener('click', async () => {
     const exeName = await window.electronAPI.browseForExe();
@@ -172,40 +275,49 @@ function setupEventListeners() {
   availableSearch.addEventListener('input', () => renderProgramLists());
   selectedSearch.addEventListener('input', () => renderProgramLists());
 
-  // Music library button
-  updateMusicBtn.addEventListener('click', () => {
-    showMusicLibraryModal();
+  // Music library button - navigate to library page
+  updateMusicBtn.addEventListener('click', async () => {
+    await loadMusicLibraryStatus();
+    renderLibraryPage();
+    navigateToPage('library');
   });
 
-  // Music library modal
-  musicLibraryModalClose.addEventListener('click', () => {
-    closeMusicLibraryModal();
-  });
+  // Music library modal (keep for backwards compat, but prefer page)
+  if (musicLibraryModalClose) {
+    musicLibraryModalClose.addEventListener('click', () => {
+      closeMusicLibraryModal();
+    });
+  }
 
-  musicLibraryModalCancel.addEventListener('click', () => {
-    closeMusicLibraryModal();
-  });
+  if (musicLibraryModalCancel) {
+    musicLibraryModalCancel.addEventListener('click', () => {
+      closeMusicLibraryModal();
+    });
+  }
 
-  musicLibraryModalDownload.addEventListener('click', async () => {
-    await downloadSelectedCategories();
-  });
+  if (musicLibraryModalDownload) {
+    musicLibraryModalDownload.addEventListener('click', async () => {
+      await downloadSelectedCategories();
+    });
+  }
 
-  musicFolderOpenBtn.addEventListener('click', () => {
-    window.electronAPI.openMusicFolder();
-  });
-
-  musicFolderChangeBtn.addEventListener('click', async () => {
-    const newPath = await window.electronAPI.selectMusicFolder();
-    if (newPath) {
-      musicFolderPathText.textContent = newPath;
-      // Reload status after folder change
-      loadMusicLibraryStatus();
-    }
-  });
+  // Library page download button
+  if (libraryDownloadBtn) {
+    libraryDownloadBtn.addEventListener('click', async () => {
+      await downloadSelectedCategories();
+    });
+  }
 
   // Listen for music download progress
   window.electronAPI.onMusicDownloadProgress((progressData) => {
     handleMusicDownloadProgress(progressData);
+  });
+
+  // Listen for request to open library page directly
+  window.electronAPI.onOpenLibraryModal(async () => {
+    await loadMusicLibraryStatus();
+    renderLibraryPage();
+    navigateToPage('library');
   });
 }
 
@@ -213,25 +325,45 @@ function setupEventListeners() {
 function navigateToPage(page) {
   currentPage = page;
 
+  const settingsFooter = document.getElementById('settingsFooter');
+
   // Update header
   if (page === 'main') {
     headerTitle.textContent = 'Settings';
     backBtn.style.display = 'none';
+    closeBtn.style.display = 'block';
     mainPage.classList.remove('slide-left');
     devicesPage.classList.add('hidden');
     programsPage.classList.add('hidden');
+    if (libraryPage) libraryPage.classList.add('hidden');
+    settingsFooter.style.display = 'flex';
   } else if (page === 'devices') {
     headerTitle.textContent = 'Select Devices';
     backBtn.style.display = 'block';
+    closeBtn.style.display = 'none';
     mainPage.classList.add('slide-left');
     devicesPage.classList.remove('hidden');
     programsPage.classList.add('hidden');
+    if (libraryPage) libraryPage.classList.add('hidden');
+    settingsFooter.style.display = 'none';
   } else if (page === 'programs') {
     headerTitle.textContent = 'Select Programs';
     backBtn.style.display = 'block';
+    closeBtn.style.display = 'none';
     mainPage.classList.add('slide-left');
     devicesPage.classList.add('hidden');
     programsPage.classList.remove('hidden');
+    if (libraryPage) libraryPage.classList.add('hidden');
+    settingsFooter.style.display = 'none';
+  } else if (page === 'library') {
+    headerTitle.textContent = 'Music Library';
+    backBtn.style.display = 'block';
+    closeBtn.style.display = 'none';
+    mainPage.classList.add('slide-left');
+    devicesPage.classList.add('hidden');
+    programsPage.classList.add('hidden');
+    if (libraryPage) libraryPage.classList.remove('hidden');
+    settingsFooter.style.display = 'none';
   }
 }
 
@@ -544,12 +676,11 @@ async function loadMusicLibraryStatus() {
 function updateMusicLibraryUI() {
   if (!musicLibraryStatus) return;
 
-  // Update button text based on status
-  const statusText = musicLibraryStatus.status === 'not-installed'
-    ? 'Install Music Library'
-    : musicLibraryStatus.status === 'out-of-date'
-    ? 'Update Available'
-    : 'Check for Updates';
+  // Update button text based on status - simplified
+  let statusText = 'Library';
+  if (musicLibraryStatus.status === 'out-of-date') {
+    statusText = 'Library (Updates Available)';
+  }
 
   musicBtnText.textContent = statusText;
 
@@ -562,47 +693,335 @@ function updateMusicLibraryUI() {
   }
 }
 
-function showMusicLibraryModal() {
-  if (!musicLibraryStatus) return;
+// Render the full-page library view
+function renderLibraryPage() {
+  if (!musicLibraryStatus || !libraryList) return;
 
-  // Populate modal
-  musicFolderPathText.textContent = musicLibraryStatus.musicFolderPath || './music';
-
-  // Show library status
-  let statusDisplay = '';
-  if (musicLibraryStatus.status === 'not-installed') {
-    statusDisplay = 'No music library installed. Select categories below to begin.';
-  } else if (musicLibraryStatus.status === 'out-of-date') {
-    const newCount = musicLibraryStatus.newOrUpdatedCategories?.length || 0;
-    statusDisplay = `Update available. ${newCount} new or updated categories.`;
-  } else {
-    statusDisplay = `Up to date - Version ${musicLibraryStatus.aggregatedVersion}`;
-  }
-  libraryStatusText.textContent = statusDisplay;
-
-  // Build category checkboxes
-  categoriesCheckboxes.innerHTML = '';
+  libraryList.innerHTML = '';
   selectedMusicCategories = [];
 
   const categories = musicLibraryStatus.availableCategories || {};
   const installed = musicLibraryStatus.localMetadata?.installedCategories || {};
 
-  Object.entries(categories).forEach(([catName, catInfo]) => {
-    const isInstalled = installed[catName]?.installed;
-    const isNew = !isInstalled;
-    const isUpdated = isInstalled && installed[catName].libraryVersion !== catInfo.libraryVersion;
+  // Helper to format version
+  const formatVersion = (ver) => {
+    if (!ver) return '';
+    const parts = ver.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : ver;
+  };
 
-    const checkbox = document.createElement('div');
-    checkbox.className = 'category-checkbox';
+  // Helper to format size
+  const formatSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+    } else {
+      return `${Math.round(bytes / (1024 * 1024))}MB`;
+    }
+  };
+
+  if (Object.keys(categories).length === 0) {
+    libraryList.innerHTML = '<div class="empty-message">No categories available</div>';
+    updateLibraryDownloadButton();
+    return;
+  }
+
+  // Check if there are any selectable items
+  let hasSelectableItems = false;
+  Object.entries(categories).forEach(([catName, catInfo]) => {
+    const installedInfo = installed[catName];
+    const isInstalled = installedInfo?.installed;
+    const hasUpdate = isInstalled && installedInfo?.version !== catInfo.version;
+    if (!isInstalled || hasUpdate) {
+      hasSelectableItems = true;
+    }
+  });
+
+  // Set up the Select All button in the HTML
+  const librarySelectAll = document.getElementById('librarySelectAll');
+  let selectAllElement = null;
+  
+  // Function to update Select All checkbox state based on individual selections
+  const updateSelectAllState = () => {
+    if (!selectAllElement) return;
+    const allItems = libraryList.querySelectorAll('.library-item:not(.disabled)');
+    const selectedItems = libraryList.querySelectorAll('.library-item:not(.disabled).selected');
+    
+    if (selectedItems.length === 0) {
+      selectAllElement.classList.remove('selected');
+    } else if (selectedItems.length === allItems.length) {
+      selectAllElement.classList.add('selected');
+    } else {
+      // Some but not all selected - uncheck Select All
+      selectAllElement.classList.remove('selected');
+    }
+  };
+
+  if (librarySelectAll) {
+    // Remove any previous event listener by cloning
+    const newSelectAll = librarySelectAll.cloneNode(true);
+    librarySelectAll.parentNode.replaceChild(newSelectAll, librarySelectAll);
+    selectAllElement = newSelectAll;
+    
+    if (hasSelectableItems) {
+      newSelectAll.classList.remove('disabled');
+      newSelectAll.addEventListener('click', () => {
+        const isSelected = newSelectAll.classList.toggle('selected');
+        // Toggle all selectable items
+        const allItems = libraryList.querySelectorAll('.library-item:not(.disabled)');
+        allItems.forEach(item => {
+          const catName = item.dataset.category;
+          if (isSelected) {
+            item.classList.add('selected');
+            if (!selectedMusicCategories.includes(catName)) {
+              selectedMusicCategories.push(catName);
+            }
+          } else {
+            item.classList.remove('selected');
+            selectedMusicCategories = selectedMusicCategories.filter(c => c !== catName);
+          }
+        });
+        updateLibraryDownloadButton();
+      });
+    } else {
+      newSelectAll.classList.add('disabled');
+      newSelectAll.classList.remove('selected');
+    }
+  }
+
+  // GitHub raw URL base for category icons
+  const iconBaseUrl = 'https://raw.githubusercontent.com/CalvFletch/AmbienceApp/main/icons/categories/';
+
+  Object.entries(categories).forEach(([catName, catInfo]) => {
+    const installedInfo = installed[catName];
+    const isInstalled = installedInfo?.installed;
+    const installedVersion = installedInfo?.version;
+    const availableVersion = catInfo.version;
+    const hasUpdate = isInstalled && installedVersion !== availableVersion;
+
+    const item = document.createElement('div');
+    item.className = 'library-item';
+    item.dataset.category = catName;
+
+    // If installed and up to date, mark as disabled
+    if (isInstalled && !hasUpdate) {
+      item.classList.add('disabled');
+      item.classList.add('selected');
+    } else if (hasUpdate) {
+      // Auto-select items with updates
+      item.classList.add('selected');
+      selectedMusicCategories.push(catName);
+    }
+
+    // Checkbox icon
+    const checkboxIcon = document.createElement('div');
+    checkboxIcon.className = 'checkbox-icon';
+    checkboxIcon.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+
+    // Category icon from GitHub
+    const categoryIcon = document.createElement('img');
+    categoryIcon.className = 'library-item-icon';
+    categoryIcon.src = `${iconBaseUrl}${catName.toLowerCase().replace(/\s+/g, '-')}.png`;
+    categoryIcon.alt = catName;
+    categoryIcon.onerror = () => {
+      // Fallback: hide if icon doesn't exist
+      categoryIcon.style.display = 'none';
+    };
+
+    // Info section: "Skyrim" (light) "- 4 Tracks - 1.5gb" (dark)
+    const infoSection = document.createElement('div');
+    infoSection.className = 'library-item-info';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'library-item-name';
+    nameSpan.textContent = catName;
+
+    const metaSpan = document.createElement('span');
+    metaSpan.className = 'library-item-meta';
+    const sizeStr = catInfo.totalSize ? formatSize(catInfo.totalSize) : '';
+    const trackCount = catInfo.songCount || 0;
+    metaSpan.textContent = `- ${trackCount} Tracks${sizeStr ? ' - ' + sizeStr : ''}`;
+
+    infoSection.appendChild(nameSpan);
+    infoSection.appendChild(metaSpan);
+
+    // Version
+    const versionSpan = document.createElement('span');
+    versionSpan.className = 'library-item-version';
+    if (hasUpdate) {
+      versionSpan.classList.add('update-available');
+      versionSpan.textContent = `v${formatVersion(availableVersion)} (v${formatVersion(installedVersion)})`;
+    } else if (isInstalled) {
+      versionSpan.textContent = `v${formatVersion(installedVersion)}`;
+    } else {
+      versionSpan.textContent = `v${formatVersion(availableVersion)}`;
+    }
+
+    item.appendChild(checkboxIcon);
+    item.appendChild(categoryIcon);
+    item.appendChild(infoSection);
+    item.appendChild(versionSpan);
+
+    // Remove button for installed categories
+    if (isInstalled) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'remove-btn';
+      removeBtn.textContent = '×';
+      removeBtn.title = 'Remove this library';
+      removeBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await confirmAndRemoveCategory(catName, catInfo, item);
+      });
+      item.appendChild(removeBtn);
+    }
+
+    // Click handler for selection (only if not disabled)
+    if (!isInstalled || hasUpdate) {
+      item.addEventListener('click', () => {
+        const isSelected = item.classList.toggle('selected');
+        if (isSelected) {
+          if (!selectedMusicCategories.includes(catName)) {
+            selectedMusicCategories.push(catName);
+          }
+        } else {
+          selectedMusicCategories = selectedMusicCategories.filter(c => c !== catName);
+        }
+        updateSelectAllState();
+        updateLibraryDownloadButton();
+      });
+    }
+
+    libraryList.appendChild(item);
+  });
+
+  updateSelectAllState();
+  updateLibraryDownloadButton();
+  if (downloadProgressSection) downloadProgressSection.classList.add('hidden');
+}
+
+function updateLibraryDownloadButton() {
+  if (!libraryDownloadBtn) return;
+  libraryDownloadBtn.disabled = selectedMusicCategories.length === 0 || isDownloadingLibrary;
+  libraryDownloadBtn.textContent = selectedMusicCategories.length > 0
+    ? `Download (${selectedMusicCategories.length})`
+    : 'Download Selected';
+}
+
+function showMusicLibraryModal() {
+  if (!musicLibraryStatus) return;
+
+  // Build category checkboxes with new format
+  if (categoriesCheckboxes) categoriesCheckboxes.innerHTML = '';
+  selectedMusicCategories = [];
+
+  const categories = musicLibraryStatus.availableCategories || {};
+  const installed = musicLibraryStatus.localMetadata?.installedCategories || {};
+
+  // Helper to format version (X.Y instead of X.Y.Z)
+  const formatVersion = (ver) => {
+    if (!ver) return '';
+    const parts = ver.split('.');
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : ver;
+  };
+
+  // Helper to format size
+  const formatSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes >= 1024 * 1024 * 1024) {
+      return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB`;
+    } else {
+      return `${Math.round(bytes / (1024 * 1024))}MB`;
+    }
+  };
+
+  // Check if all categories are up to date
+  let hasActionableItems = false;
+  Object.entries(categories).forEach(([catName, catInfo]) => {
+    const installedInfo = installed[catName];
+    const isInstalled = installedInfo?.installed;
+    const hasUpdate = isInstalled && installedInfo?.version !== catInfo.version;
+    if (!isInstalled || hasUpdate) {
+      hasActionableItems = true;
+    }
+  });
+
+  // Select All area - show checkbox or "all up to date" message
+  const selectAllCheckbox = document.getElementById('selectAllCategories');
+  const selectAllLabel = document.querySelector('label[for="selectAllCategories"]');
+  const selectAllText = selectAllLabel ? selectAllLabel.querySelector('span') : null;
+  
+  if (!hasActionableItems) {
+    // All up to date - hide checkbox, show message
+    if (selectAllCheckbox) selectAllCheckbox.style.display = 'none';
+    if (selectAllText) selectAllText.textContent = 'ALL LIBRARIES UP TO DATE';
+    if (selectAllLabel) {
+      selectAllLabel.style.color = 'var(--text-dim)';
+      selectAllLabel.style.cursor = 'default';
+    }
+  } else {
+    // Has items to download - show checkbox
+    if (selectAllCheckbox) {
+      selectAllCheckbox.style.display = '';
+      selectAllCheckbox.checked = false;
+      selectAllCheckbox.indeterminate = false;
+    }
+    if (selectAllText) selectAllText.textContent = 'SELECT ALL';
+    if (selectAllLabel) {
+      selectAllLabel.style.color = '';
+      selectAllLabel.style.cursor = 'pointer';
+    }
+    
+    if (selectAllCheckbox) {
+      selectAllCheckbox.addEventListener('change', (e) => {
+        const allCheckboxes = categoriesCheckboxes.querySelectorAll('input[type="checkbox"]:not(:disabled)');
+        allCheckboxes.forEach(cb => {
+          cb.checked = e.target.checked;
+          const catName = cb.value;
+          if (e.target.checked) {
+            if (!selectedMusicCategories.includes(catName)) {
+              selectedMusicCategories.push(catName);
+            }
+          } else {
+            selectedMusicCategories = selectedMusicCategories.filter(c => c !== catName);
+          }
+        });
+        updateDownloadButton();
+      });
+    }
+  }
+
+  Object.entries(categories).forEach(([catName, catInfo]) => {
+    const installedInfo = installed[catName];
+    const isInstalled = installedInfo?.installed;
+    const installedVersion = installedInfo?.version;
+    const availableVersion = catInfo.version;
+    const hasUpdate = isInstalled && installedVersion !== availableVersion;
+
+    const row = document.createElement('div');
+    row.dataset.category = catName;
+    row.style.cssText = 'display: flex; align-items: center; gap: 10px; font-size: 11px;';
 
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.value = catName;
-    // Pre-check if missing or updated
-    input.checked = isNew || isUpdated;
+    input.style.cssText = 'cursor: pointer; width: 14px; height: 14px; flex-shrink: 0;';
 
-    if (input.checked) {
+    // State: installed (greyed), update available (blue), new (normal)
+    if (isInstalled && !hasUpdate) {
+      // Installed & up to date - checked and greyed out
+      input.disabled = true;
+      input.checked = true;
+      input.style.opacity = '0.5';
+      input.style.cursor = 'default';
+      row.style.opacity = '0.7';
+    } else if (hasUpdate) {
+      // Update available - blue/highlighted
+      input.checked = true;
       selectedMusicCategories.push(catName);
+      row.style.color = '#6cb2eb';
+    } else {
+      // New - normal unchecked
+      input.checked = false;
     }
 
     input.addEventListener('change', (e) => {
@@ -613,53 +1032,172 @@ function showMusicLibraryModal() {
       } else {
         selectedMusicCategories = selectedMusicCategories.filter(c => c !== catName);
       }
+      updateSelectAllState();
       updateDownloadButton();
     });
 
-    const label = document.createElement('label');
-    let labelText = catName;
-    if (isNew) {
-      labelText += ' (NEW)';
-    } else if (isUpdated) {
-      labelText += ' (UPDATE)';
+    // Category name and info
+    const label = document.createElement('span');
+    label.style.cssText = 'flex: 1; letter-spacing: 1px;';
+    
+    const sizeStr = catInfo.totalSize ? formatSize(catInfo.totalSize) : '';
+    const trackCount = catInfo.songCount || 0;
+    label.textContent = `${catName} ${sizeStr ? `(${sizeStr} ${trackCount} tracks)` : ''}`;
+
+    // Version info
+    const versionSpan = document.createElement('span');
+    versionSpan.style.cssText = 'font-size: 10px; letter-spacing: 1px;';
+    
+    if (hasUpdate) {
+      // Show: v2.0 (v1.0) with red tint on available
+      versionSpan.innerHTML = `<span style="color: #e57373;">v${formatVersion(availableVersion)}</span> <span style="color: var(--text-dim);">(v${formatVersion(installedVersion)})</span>`;
     } else if (isInstalled) {
-      labelText += ' (installed)';
+      // Just installed version
+      versionSpan.textContent = `v${formatVersion(installedVersion)}`;
+      versionSpan.style.color = 'var(--text-dim)';
+    } else {
+      // New - show available version
+      versionSpan.textContent = `v${formatVersion(availableVersion)}`;
+      versionSpan.style.color = 'var(--text-secondary)';
     }
-    label.textContent = labelText;
 
-    const version = document.createElement('span');
-    version.className = 'category-version';
-    version.textContent = `v${catInfo.libraryVersion}`;
+    row.appendChild(input);
+    row.appendChild(label);
+    row.appendChild(versionSpan);
 
-    checkbox.appendChild(input);
-    checkbox.appendChild(label);
-    checkbox.appendChild(version);
-    categoriesCheckboxes.appendChild(checkbox);
+    // Add remove button for installed categories
+    if (isInstalled) {
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'remove-category-btn';
+      removeBtn.textContent = '×';
+      removeBtn.title = 'Remove this library';
+      removeBtn.style.cssText = 'background: transparent; border: 1px solid rgba(255,100,100,0.3); color: rgba(255,100,100,0.6); width: 18px; height: 18px; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; margin-left: 6px; transition: all 0.15s ease;';
+      removeBtn.addEventListener('mouseenter', () => {
+        removeBtn.style.borderColor = 'rgba(255,100,100,0.7)';
+        removeBtn.style.color = 'rgba(255,100,100,1)';
+      });
+      removeBtn.addEventListener('mouseleave', () => {
+        removeBtn.style.borderColor = 'rgba(255,100,100,0.3)';
+        removeBtn.style.color = 'rgba(255,100,100,0.6)';
+      });
+      removeBtn.addEventListener('click', async (e) => {
+        const btnToRemove = e.currentTarget;
+        await confirmAndRemoveCategory(catName, catInfo, row, input, versionSpan, btnToRemove);
+      });
+      row.appendChild(removeBtn);
+    }
+
+    categoriesCheckboxes.appendChild(row);
   });
 
+  function updateSelectAllState() {
+    const allCheckboxes = categoriesCheckboxes.querySelectorAll('input[type="checkbox"]:not(:disabled)');
+    const checkedCount = Array.from(allCheckboxes).filter(cb => cb.checked).length;
+    selectAllCheckbox.checked = checkedCount === allCheckboxes.length && allCheckboxes.length > 0;
+    selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < allCheckboxes.length;
+  }
+
+  if (hasActionableItems) {
+    updateSelectAllState();
+  }
   updateDownloadButton();
   downloadProgressSection.classList.add('hidden');
   musicLibraryModal.classList.remove('hidden');
 }
 
 function closeMusicLibraryModal() {
-  musicLibraryModal.classList.add('hidden');
-  downloadProgressSection.classList.add('hidden');
+  if (musicLibraryModal) musicLibraryModal.classList.add('hidden');
+  if (downloadProgressSection) downloadProgressSection.classList.add('hidden');
+}
+
+// Delete confirmation with "don't ask again" support
+async function confirmAndRemoveCategory(catName, catInfo, rowEl) {
+  const doRemove = async () => {
+    const result = await window.electronAPI.removeLibraryCategory(catName);
+    if (result.success) {
+      // Refresh status and rebuild the library page
+      await loadMusicLibraryStatus();
+      renderLibraryPage();
+    } else {
+      alert('Failed to remove: ' + result.error);
+    }
+  };
+
+  // If user chose "don't ask again", skip the modal
+  if (skipDeleteWarning) {
+    await doRemove();
+    return;
+  }
+
+  // Show custom confirmation modal
+  deleteConfirmText.textContent = `Remove ${catName} library? This will delete the music files.`;
+  deleteConfirmDontAsk.checked = false;
+  
+  // Reset custom checkbox visual state
+  const dontAskRow = document.getElementById('deleteConfirmDontAskRow');
+  if (dontAskRow) {
+    dontAskRow.classList.remove('selected');
+    const checkIcon = dontAskRow.querySelector('.checkbox-icon svg');
+    if (checkIcon) checkIcon.style.opacity = '0';
+  }
+  
+  deleteConfirmModal.classList.remove('hidden');
+
+  // Create a promise that resolves when user makes a choice
+  return new Promise((resolve) => {
+    const onDontAskClick = () => {
+      const isSelected = dontAskRow.classList.toggle('selected');
+      deleteConfirmDontAsk.checked = isSelected;
+      const checkIcon = dontAskRow.querySelector('.checkbox-icon svg');
+      if (checkIcon) checkIcon.style.opacity = isSelected ? '1' : '0';
+    };
+
+    const cleanup = () => {
+      deleteConfirmYes.removeEventListener('click', onConfirm);
+      deleteConfirmCancel.removeEventListener('click', onCancel);
+      deleteConfirmClose.removeEventListener('click', onCancel);
+      if (dontAskRow) dontAskRow.removeEventListener('click', onDontAskClick);
+      deleteConfirmModal.classList.add('hidden');
+    };
+
+    const onConfirm = async () => {
+      if (deleteConfirmDontAsk.checked) {
+        skipDeleteWarning = true;
+      }
+      cleanup();
+      await doRemove();
+      resolve(true);
+    };
+
+    const onCancel = () => {
+      cleanup();
+      resolve(false);
+    };
+
+    deleteConfirmYes.addEventListener('click', onConfirm);
+    deleteConfirmCancel.addEventListener('click', onCancel);
+    deleteConfirmClose.addEventListener('click', onCancel);
+    if (dontAskRow) dontAskRow.addEventListener('click', onDontAskClick);
+  });
 }
 
 function updateDownloadButton() {
-  musicLibraryModalDownload.disabled = selectedMusicCategories.length === 0 || isDownloadingLibrary;
-  musicLibraryModalDownload.textContent = selectedMusicCategories.length > 0
-    ? `Download (${selectedMusicCategories.length})`
-    : 'Download';
+  if (musicLibraryModalDownload) {
+    musicLibraryModalDownload.disabled = selectedMusicCategories.length === 0 || isDownloadingLibrary;
+    musicLibraryModalDownload.textContent = selectedMusicCategories.length > 0
+      ? `Download (${selectedMusicCategories.length})`
+      : 'Download';
+  }
+  updateLibraryDownloadButton();
 }
 
 async function downloadSelectedCategories() {
   if (selectedMusicCategories.length === 0 || isDownloadingLibrary) return;
 
   isDownloadingLibrary = true;
-  musicLibraryModalDownload.disabled = true;
-  downloadProgressSection.classList.remove('hidden');
+  if (musicLibraryModalDownload) musicLibraryModalDownload.disabled = true;
+  if (libraryDownloadBtn) libraryDownloadBtn.disabled = true;
+  if (downloadProgressSection) downloadProgressSection.classList.remove('hidden');
 
   try {
     const targetFolder = musicLibraryStatus.musicFolderPath;
@@ -669,19 +1207,22 @@ async function downloadSelectedCategories() {
     });
 
     if (result.success) {
-      downloadProgressText.textContent = 'Download complete!';
+      if (downloadProgressText) downloadProgressText.textContent = 'Download complete!';
       await new Promise(resolve => setTimeout(resolve, 1500));
-      closeMusicLibraryModal();
+      // Refresh the library page
       await loadMusicLibraryStatus();
+      renderLibraryPage();
+      if (downloadProgressSection) downloadProgressSection.classList.add('hidden');
     } else {
-      downloadProgressText.textContent = `Error: ${result.error}`;
+      if (downloadProgressText) downloadProgressText.textContent = `Error: ${result.error}`;
     }
   } catch (e) {
     console.error('Download failed:', e);
-    downloadProgressText.textContent = `Error: ${e.message}`;
+    if (downloadProgressText) downloadProgressText.textContent = `Error: ${e.message}`;
   } finally {
     isDownloadingLibrary = false;
-    musicLibraryModalDownload.disabled = false;
+    if (musicLibraryModalDownload) musicLibraryModalDownload.disabled = false;
+    if (libraryDownloadBtn) libraryDownloadBtn.disabled = false;
   }
 }
 
@@ -697,8 +1238,8 @@ function handleMusicDownloadProgress(progressData) {
     statusStr = `${category} complete`;
   }
 
-  downloadProgressText.textContent = statusStr;
-  downloadProgressBar.style.width = `${percent || 0}%`;
+  if (downloadProgressText) downloadProgressText.textContent = statusStr;
+  if (downloadProgressBar) downloadProgressBar.style.width = `${percent || 0}%`;
 }
 
 init();

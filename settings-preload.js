@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeWindow: () => ipcRenderer.send('close-settings-window'),
   openMusicFolder: () => ipcRenderer.invoke('open-music-folder'),
   selectMusicFolder: () => ipcRenderer.invoke('select-music-folder'),
+  saveMusicFolder: (folderPath) => ipcRenderer.invoke('save-music-folder', folderPath),
+  previewMusicFolder: (folderPath) => ipcRenderer.invoke('preview-music-folder', folderPath),
   getStartOnBoot: () => ipcRenderer.invoke('get-start-on-boot'),
   setStartOnBoot: (enabled) => ipcRenderer.invoke('set-start-on-boot', enabled),
   getAudioDevices: () => ipcRenderer.invoke('get-audio-devices'),
@@ -17,5 +19,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Music library
   getMusicLibraryStatus: () => ipcRenderer.invoke('get-music-library-status'),
   downloadLibraryCategories: (options) => ipcRenderer.invoke('download-library-categories', options),
-  onMusicDownloadProgress: (callback) => ipcRenderer.on('music-download-progress', (event, ...args) => callback(...args))
+  removeLibraryCategory: (categoryName) => ipcRenderer.invoke('remove-library-category', categoryName),
+  onMusicDownloadProgress: (callback) => ipcRenderer.on('music-download-progress', (event, ...args) => callback(...args)),
+  onOpenLibraryModal: (callback) => ipcRenderer.on('open-library-modal', (event, ...args) => callback(...args)),
+  // Updates
+  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+  openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url)
 });
