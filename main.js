@@ -744,11 +744,32 @@ ipcMain.handle('debug-force-skip', async () => {
 });
 
 ipcMain.handle('debug-music-info', async () => {
-  const files = await getMusicFiles();
-  const categories = [...new Set(files.map(f => f.category).filter(Boolean))];
+  // Get music files inline (same logic as get-music-files handler)
+  const folderToUse = previewMusicFolder || musicFolder;
+  const audioExtensions = ['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.mp4', '.webm', '.mkv'];
+  const allFiles = [];
+  
+  function findFiles(currentPath, categoryParts = []) {
+    try {
+      if (!fs.existsSync(currentPath)) return;
+      const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(currentPath, entry.name);
+        if (entry.isDirectory() && entry.name !== 'node_modules') {
+          findFiles(fullPath, [...categoryParts, entry.name]);
+        } else if (entry.isFile() && audioExtensions.includes(path.extname(entry.name).toLowerCase())) {
+          allFiles.push({ category: categoryParts[0] || null });
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }
+  
+  if (folderToUse) findFiles(folderToUse);
+  
+  const categories = [...new Set(allFiles.map(f => f.category).filter(Boolean))];
   return {
-    folder: musicFolder,
-    totalFiles: files.length,
+    folder: folderToUse,
+    totalFiles: allFiles.length,
     categories: categories
   };
 });
@@ -1823,6 +1844,55 @@ function fetchReleasesFromAPI() {
   });
 }
 
+// Fetch library metadata from GitHub (raw file)
+let libraryMetadataRemote = null;
+let libraryMetadataRemoteTime = 0;
+
+function fetchLibraryMetadataFromGitHub() {
+  return new Promise((resolve) => {
+    const options = {
+      hostname: 'raw.githubusercontent.com',
+      path: `/${MUSIC_LIBRARY_REPO}/main/library-metadata.json`,
+      headers: {
+        'User-Agent': 'AmbienceApp'
+      }
+    };
+
+    https.get(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const metadata = JSON.parse(data);
+          resolve(metadata);
+        } catch (e) {
+          console.error('Failed to parse library metadata:', e);
+          resolve(null);
+        }
+      });
+    }).on('error', (e) => {
+      console.error('Failed to fetch library metadata:', e);
+      resolve(null);
+    });
+  });
+}
+
+async function getLibraryMetadataRemote(forceRefresh = false) {
+  const now = Date.now();
+  
+  // Cache for 1 hour
+  if (!forceRefresh && libraryMetadataRemote && (now - libraryMetadataRemoteTime) < 3600000) {
+    return libraryMetadataRemote;
+  }
+  
+  const metadata = await fetchLibraryMetadataFromGitHub();
+  if (metadata) {
+    libraryMetadataRemote = metadata;
+    libraryMetadataRemoteTime = now;
+  }
+  return metadata || libraryMetadataRemote;
+}
+
 // Fetch releases with 24-hour caching
 async function fetchMusicLibraryReleases(forceRefresh = false) {
   const now = Date.now();
@@ -1859,6 +1929,50 @@ async function fetchMusicLibraryReleases(forceRefresh = false) {
   return [];
 }
 
+// Debug: Force refresh music library releases (bypass cache)
+ipcMain.handle('debug-force-refresh-library', async () => {
+  console.log('Force refreshing music library releases...');
+  releasesCache = null;
+  releasesCacheTime = 0;
+  
+  // Delete disk cache file
+  if (musicFolder) {
+    const cacheFile = path.join(musicFolder, RELEASES_CACHE_FILENAME);
+    try {
+      if (fs.existsSync(cacheFile)) {
+        fs.unlinkSync(cacheFile);
+      }
+    } catch (e) {
+      console.error('Failed to delete cache file:', e);
+    }
+  }
+  
+  const releases = await fetchMusicLibraryReleases(true);
+  return {
+    success: true,
+    releaseCount: releases?.length || 0,
+    releases: releases?.map(r => r.tag_name) || []
+  };
+});
+
+// Debug: Clear local library metadata (removes installed category info)
+ipcMain.handle('debug-clear-library-metadata', async () => {
+  if (!musicFolder) return { success: false, error: 'No music folder set' };
+  
+  const metadataPath = path.join(musicFolder, LIBRARY_METADATA_FILENAME);
+  try {
+    if (fs.existsSync(metadataPath)) {
+      fs.unlinkSync(metadataPath);
+    }
+    // Also clear in-memory cache
+    libraryMetadataCache = null;
+    libraryMetadataCacheTime = 0;
+    return { success: true, message: 'Library metadata cleared' };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 // Parse category info from release (tag format: category-version, e.g., skyrim-1.0.0)
 function parseCategoryFromRelease(release) {
   if (!release.tag_name) return null;
@@ -1884,10 +1998,22 @@ function parseCategoryFromRelease(release) {
   let songCount = 0;
   let totalSize = 0;
   const body = release.body || '';
-  const songMatch = body.match(/songCount:\s*(\d+)/i);
-  const sizeMatch = body.match(/totalSize:\s*(\d+)/i);
+  
+  // Match "Media files: 3" format
+  const songMatch = body.match(/Media files:\s*(\d+)/i);
   if (songMatch) songCount = parseInt(songMatch[1], 10);
-  if (sizeMatch) totalSize = parseInt(sizeMatch[1], 10);
+  
+  // Match "Size: 245.2 MB" or "Size: 1.5 GB" format and convert to bytes
+  const sizeMatch = body.match(/Size:\s*([\d.]+)\s*(MB|GB)/i);
+  if (sizeMatch) {
+    const sizeValue = parseFloat(sizeMatch[1]);
+    const sizeUnit = sizeMatch[2].toUpperCase();
+    if (sizeUnit === 'GB') {
+      totalSize = Math.round(sizeValue * 1024 * 1024 * 1024);
+    } else {
+      totalSize = Math.round(sizeValue * 1024 * 1024);
+    }
+  }
   
   return {
     name: categoryName,
@@ -1904,6 +2030,8 @@ function parseCategoryFromRelease(release) {
 // Build available categories from all releases (each release = one category)
 async function buildAvailableCategoriesMap() {
   const releases = await fetchMusicLibraryReleases();
+  const metadata = await getLibraryMetadataRemote();
+  
   if (!Array.isArray(releases) || releases.length === 0) return {};
 
   const categoryMap = {};
@@ -1917,15 +2045,18 @@ async function buildAvailableCategoriesMap() {
     // or if it has a higher version
     const existing = categoryMap[catInfo.name];
     if (!existing || compareVersions(catInfo.version, existing.version) > 0) {
+      // Get metadata from the central metadata file if available
+      const metaCat = metadata?.categories?.[catInfo.name];
+      
       categoryMap[catInfo.name] = {
         name: catInfo.name,
         slug: catInfo.slug,
         version: catInfo.version,
         releaseTag: catInfo.releaseTag,
         releaseUrl: catInfo.releaseUrl,
-        archiveNames: catInfo.archiveNames,
-        songCount: catInfo.songCount,
-        totalSize: catInfo.totalSize
+        archiveNames: metaCat?.archives || catInfo.archiveNames,
+        songCount: metaCat?.songCount || catInfo.songCount,
+        totalSize: metaCat?.totalSize || catInfo.totalSize
       };
     }
   }

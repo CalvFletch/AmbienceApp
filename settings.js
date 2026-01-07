@@ -789,8 +789,8 @@ function renderLibraryPage() {
     }
   }
 
-  // GitHub raw URL base for category icons
-  const iconBaseUrl = 'https://raw.githubusercontent.com/CalvFletch/AmbienceApp/main/icons/categories/';
+  // GitHub raw URL base for category icons (from MusicLibrary repo)
+  const iconBaseUrl = 'https://raw.githubusercontent.com/CalvFletch/AmbienceApp-MusicLibrary/main/icons/';
 
   Object.entries(categories).forEach(([catName, catInfo]) => {
     const installedInfo = installed[catName];
