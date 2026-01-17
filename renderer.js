@@ -166,6 +166,25 @@ function stopDucking(fadeDuration = 15000) {
   fadeVolume(targetVolume, fadeDuration);
 }
 
+// Force restore playback when ducking is disabled via toggle
+// This ensures music plays normally regardless of ducking state
+function forceRestorePlayback() {
+  console.log('Ducking disabled: forcing normal playback');
+  isDucking = false;
+  wasPausedByDucking = false;
+  const trackLabel = document.getElementById('trackLabel');
+  animateTextSwitch(trackLabel, 'NOW PLAYING');
+  const duckingOverlay = document.getElementById('ducking-overlay');
+  duckingOverlay.style.transition = 'opacity 0.5s ease';
+  document.body.classList.remove('ducking-active');
+  // Restore volume immediately
+  fadeVolume(targetVolume, 500);
+  // Resume playback if not manually paused
+  if (!isManuallyPaused && activePlayer.paused) {
+    activePlayer.play().catch(console.error);
+  }
+}
+
 async function init() {
   setupEventListeners();
   setupNotificationBanner();
@@ -876,12 +895,13 @@ function setupEventListeners() {
     if (duckingEnabled) {
       duckIconOn.classList.remove('hidden');
       duckIconOff.classList.add('hidden');
-      if (selectedDuckDevices.length > 0) startDuckingCheck();
+      if (selectedDuckDevices.length > 0 || selectedDuckExes.length > 0) startDuckingCheck();
     } else {
       duckIconOn.classList.add('hidden');
       duckIconOff.classList.remove('hidden');
       stopDuckingCheck();
-      if (isDucking) stopDucking(500);
+      // Force restore normal playback state when disabling ducking
+      forceRestorePlayback();
     }
     saveCurrentSettings();
   });
